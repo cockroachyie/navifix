@@ -1,0 +1,65 @@
+"""
+redfish/collectors/voltage.py
+================================
+Redfish resources consumed
+---------------------------
+- Chassis/{id}/Thermal -> Voltages[] (yes, Voltages are embedded in the
+  Thermal resource in the 2020.x schema — a historical quirk of Redfish)
+- Chassis/{id}/Power -> Voltages[] (some BMCs also report voltages here)
+- Chassis/{id}/EnvironmentMetrics (2021.x+): PowerWatts, Voltages
+
+Captures every voltage rail: ReadingVolts, UpperThresholdCritical,
+UpperThresholdFatal, UpperThresholdNonCritical, LowerThresholdCritical,
+LowerThresholdFatal, LowerThresholdNonCritical, PhysicalContext, Status.
+"""
+from .common import component, reading
+from database.models import ComponentCategory
+
+
+def collect(client, server, topology):
+    components, readings = [], []
+
+    for chassis_uri, links in topology.get("per_chassis", {}).items():
+
+        voltage_items = []
+
+        # ── Voltages embedded in Thermal resource ───────────────────────
+        thermal_uri = links.get("thermal")
+        if thermal_uri:
+            body = client.get(thermal_uri)
+            if body:
+                voltage_items.extend(body.get("Voltages", []))
+
+        # ── Voltages embedded in Power resource ─────────────────────────
+        power_uri = links.get("power")
+        if power_uri:
+            body = client.get(power_uri)
+            if body:
+                voltage_items.extend(body.get("Voltages", []))
+
+        # ── 2021.x EnvironmentMetrics ───────────────────────────────────
+        env_uri = links.get("environment_metrics")
+        if env_uri:
+            env = client.get(env_uri)
+            if env:
+                for v in (env.get("Voltages") or env.get("PowerVoltages") or []):
+                    voltage_items.append(v)
+
+        for v in voltage_items:
+            odata_id = (
+                v.get("@odata.id")
+                or f"{chassis_uri}#voltage#{v.get('MemberId', v.get('Name', ''))}"
+            )
+            name     = v.get("Name") or "Voltage Sensor"
+            location = v.get("PhysicalContext")
+
+            components.append(component(
+                ComponentCategory.VOLTAGE_SENSOR, odata_id, name, v, location=location,
+            ))
+
+            volts = v.get("ReadingVolts")
+            if volts is not None:
+                readings.append(reading("voltage", name, volts, "V"))
+
+    readings = [r for r in readings if r]
+    return components, readings

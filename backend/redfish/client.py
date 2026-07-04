@@ -1,0 +1,83 @@
+"""
+redfish/client.py
+==================
+Thin, resilient GET/POST wrapper around a RedfishSession. All Redfish
+traffic in the application flows through this client so retry, timeout,
+and re-authentication behavior is consistent everywhere (discovery,
+inventory, and every collector).
+
+Nothing in this file is vendor-specific. Vendor differences are handled by
+consumers reading whatever properties happen to exist in the JSON body.
+"""
+import logging
+import time
+
+import httpx
+
+from .session import RedfishSession, RedfishAuthError, RedfishUnreachableError
+
+logger = logging.getLogger(__name__)
+
+
+class RedfishClient:
+    def __init__(self, session: RedfishSession, config):
+        self.session = session
+        self.config = config
+
+    def get(self, path: str) -> dict | None:
+        """GET a Redfish resource and return its parsed JSON body, or None
+        if the resource does not exist (404) - many Redfish resources are
+        genuinely optional and a 404 there is not an error condition."""
+        return self._request("GET", path)
+
+    def post(self, path: str, json_body: dict | None = None) -> dict | None:
+        return self._request("POST", path, json_body=json_body)
+
+    def patch(self, path: str, json_body: dict) -> dict | None:
+        return self._request("PATCH", path, json_body=json_body)
+
+    # -- internals ------------------------------------------------------
+
+    def _request(self, method: str, path: str, json_body: dict | None = None) -> dict | None:
+        attempts = 0
+        last_exc = None
+        while attempts < self.config.REDFISH_MAX_RETRIES:
+            attempts += 1
+            try:
+                client = self.session.get_http_client()
+                with client:
+                    resp = client.request(method, path, json=json_body)
+
+                if resp.status_code == 404:
+                    return None
+
+                if resp.status_code == 401:
+                    # Session expired / was invalidated on the BMC side (e.g.
+                    # another client logged the session out, or it idled
+                    # out). Force re-authentication and retry once.
+                    logger.info("401 from %s on %s - reauthenticating", self.session.base_url, path)
+                    self.session.invalidate()
+                    continue
+
+                if resp.status_code >= 500:
+                    raise RedfishUnreachableError(f"{resp.status_code} from {path}")
+
+                resp.raise_for_status()
+                if not resp.content:
+                    return {}
+                return resp.json()
+
+            except (httpx.ConnectError, httpx.TimeoutException, RedfishUnreachableError) as exc:
+                last_exc = exc
+                wait = self.config.REDFISH_RETRY_BACKOFF_SECONDS * attempts
+                logger.warning(
+                    "Redfish request failed (%s/%s) for %s%s: %s - retrying in %.1fs",
+                    attempts, self.config.REDFISH_MAX_RETRIES, self.session.base_url, path, exc, wait,
+                )
+                time.sleep(wait)
+            except RedfishAuthError:
+                raise
+
+        raise RedfishUnreachableError(
+            f"Exhausted retries reaching {self.session.base_url}{path}: {last_exc}"
+        )
