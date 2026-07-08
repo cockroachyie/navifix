@@ -33,10 +33,41 @@ const HISTORY_METRICS = {
   processor: [["cpu_temperature", "CPU Temp (C)"]],
 };
 
+// Human-readable labels for connection status enum values
+const CONNECTION_STATUS_LABELS = {
+  connected:   "Connected",
+  auth_failed: "Authentication Failed",
+  unreachable: "Unreachable",
+  unknown:     "Unknown",
+};
+
+function formatConnectionStatus(raw) {
+  return CONNECTION_STATUS_LABELS[raw] || raw || "Unknown";
+}
+
+// Translate raw last_poll_error into a user-friendly message
+function formatPollError(error, connectionStatus) {
+  if (!error) {
+    if (connectionStatus === "auth_failed") return "Invalid username or password, or the BMC rejected the session.";
+    if (connectionStatus === "unreachable") return "Unable to reach the BMC. Check the IP address and network connectivity.";
+    return null;
+  }
+  const e = error.toLowerCase();
+  if (e.includes("decrypt"))           return "Encryption key changed — re-add this server with its BMC password.";
+  if (e.includes("authentication"))    return "Invalid username or password.";
+  if (e.includes("timeout"))           return "Connection timed out — the BMC may be slow or unreachable.";
+  if (e.includes("unreachable") || e.includes("connect")) return "Unable to reach the BMC — check network connectivity.";
+  if (e.includes("ssl") || e.includes("tls") || e.includes("certificate")) return "SSL/TLS certificate error.";
+  if (e.includes("refused"))           return "Connection refused — the Redfish service may not be running.";
+  if (e.includes("500"))               return "Internal server error on the BMC.";
+  return error;
+}
+
 let state = {
   servers: [],
   selectedServerId: null,
   openCards: new Set(["chassis"]),   // categories expanded by default
+  openComponents: new Set(),         // odata_ids of expanded component items
   alerts: [],
   charts: {},                        // category -> Chart.js instance
 };
@@ -101,6 +132,9 @@ async function loadServers() {
   renderServerList();
 }
 
+// ---------------------------------------------------------------------
+// Render server list sidebar with search filter and status details
+// ---------------------------------------------------------------------
 function renderServerList() {
   const container = $("#serverList");
   const filter = ($("#serverSearch").value || "").toLowerCase();
@@ -124,7 +158,7 @@ function renderServerList() {
         <div class="server-ip">${escapeHtml(s.ip_address)}</div>
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
-        <span class="conn-indicator" style="background:${connDotColor(s.connection_status)}" title="${s.connection_status}"></span>
+        <span class="conn-indicator" style="background:${connDotColor(s.connection_status)}" title="${formatConnectionStatus(s.connection_status)}"></span>
         <i class="fa-solid ${s.power_state === 'On' ? 'fa-power-off' : 'fa-circle-stop'} power-icon" title="${s.power_state}"></i>
       </div>
     `;
@@ -167,6 +201,9 @@ async function renderMain() {
 function renderHeader(server) {
   const header = $("#serverHeader");
   const lastUpdated = server.last_successful_poll ? new Date(server.last_successful_poll).toLocaleString() : "never";
+  const connLabel = formatConnectionStatus(server.connection_status);
+  const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
+  const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
   header.innerHTML = `
     <div>
       <h1>${escapeHtml(server.display_name || server.hostname)}</h1>
@@ -174,7 +211,7 @@ function renderHeader(server) {
     </div>
     <span class="pill ${healthClass(server.health_status)}"><span class="dot" style="background:${healthDotColor(server.health_status)}"></span>${server.health_status || "Unknown"}</span>
     <span class="pill ${server.power_state === 'On' ? 'pill-ok' : 'pill-unknown'}"><i class="fa-solid fa-power-off"></i> ${server.power_state || "Unknown"}</span>
-    <span class="pill ${server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${server.connection_status || "unknown"}</span>
+    <span class="pill ${connPillClass}" ${errorDetail ? `title="${escapeHtml(errorDetail)}"` : ''}><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${connLabel}</span>
     <div class="header-stats">
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
       <div class="stat"><div class="label">Service Tag</div><div class="value">${escapeHtml(server.service_tag || "-")}</div></div>
@@ -182,6 +219,12 @@ function renderHeader(server) {
       <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>
     </div>
   `;
+  if (errorDetail && server.connection_status !== 'connected') {
+    const errBanner = document.createElement('div');
+    errBanner.className = 'header-error-banner';
+    errBanner.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> ${escapeHtml(errorDetail)}`;
+    header.appendChild(errBanner);
+  }
   $("#pollNowBtn").addEventListener("click", async () => {
     await api(`/api/servers/${state.selectedServerId}/poll-now`, { method: "POST" });
     toast("Poll queued");
@@ -192,7 +235,15 @@ function renderCards(componentsByCategory) {
   const grid = $("#cardsGrid");
   grid.innerHTML = "";
   for (const category of CATEGORY_ORDER) {
-    grid.appendChild(buildCategoryCard(category, componentsByCategory[category] || []));
+    let comps = componentsByCategory[category] || [];
+    if (category === "storage") {
+      comps = comps.concat(
+        componentsByCategory["storage_controller"] || [],
+        componentsByCategory["storage_drive"] || [],
+        componentsByCategory["storage_volume"] || []
+      );
+    }
+    grid.appendChild(buildCategoryCard(category, comps));
   }
   // logs card gets its own custom body
   grid.appendChild(buildLogsCard());
@@ -265,7 +316,10 @@ function renderCategoryBody(body, category, components) {
 
 function buildComponentItem(c) {
   const item = document.createElement("div");
-  item.className = "component-item";
+  const itemId = c.odata_id || c.name || '';
+  const wasOpen = state.openComponents.has(itemId);
+  item.className = "component-item" + (wasOpen ? " open" : "");
+  item.dataset.odataId = itemId;
   item.innerHTML = `
     <div class="component-item-header">
       <span class="dot" style="width:7px;height:7px;border-radius:50%;background:${healthDotColor(c.health)};flex-shrink:0;"></span>
@@ -278,12 +332,23 @@ function buildComponentItem(c) {
   const itemHeader = item.querySelector(".component-item-header");
   const props = item.querySelector(".component-props");
   itemHeader.addEventListener("click", () => {
+    const nowOpen = !item.classList.contains("open");
     item.classList.toggle("open");
-    if (item.classList.contains("open") && !props.dataset.rendered) {
-      props.appendChild(buildPropGrid(c.properties));
-      props.dataset.rendered = "1";
+    if (nowOpen) {
+      state.openComponents.add(itemId);
+      if (!props.dataset.rendered) {
+        props.appendChild(buildPropGrid(c.properties));
+        props.dataset.rendered = "1";
+      }
+    } else {
+      state.openComponents.delete(itemId);
     }
   });
+  // If it was previously open, render the property grid immediately
+  if (wasOpen && !props.dataset.rendered) {
+    props.appendChild(buildPropGrid(c.properties));
+    props.dataset.rendered = "1";
+  }
   return item;
 }
 
@@ -293,13 +358,24 @@ function buildComponentItem(c) {
 function buildPropGrid(obj, prefix = "") {
   const grid = document.createElement("div");
   grid.className = "prop-grid";
-  const skipKeys = new Set(["@odata.context", "@odata.etag"]);
+  const skipTopLevelKeys = new Set([
+    "@odata.context", "@odata.etag", "@odata.id", "@odata.type",
+    "Id", "Name", "Description", "Links", "Actions", "Oem", "Assembly"
+  ]);
 
   function walk(value, path) {
     if (value === null || value === undefined) {
       addRow(path, "null");
       return;
     }
+    
+    // Skip noisy metadata in nested objects too
+    const pathParts = path.split(".");
+    const lastPart = pathParts[pathParts.length - 1];
+    if (lastPart === "@odata.id" || lastPart === "@odata.type" || lastPart === "@odata.context") {
+        return; 
+    }
+
     if (Array.isArray(value)) {
       if (value.length === 0) { addRow(path, "[]"); return; }
       const allPrimitive = value.every((v) => typeof v !== "object" || v === null);
@@ -311,8 +387,11 @@ function buildPropGrid(obj, prefix = "") {
       return;
     }
     if (typeof value === "object") {
-      const keys = Object.keys(value).filter((k) => !skipKeys.has(k));
-      if (keys.length === 0) { addRow(path, "{}"); return; }
+      const keys = Object.keys(value).filter((k) => !path && skipTopLevelKeys.has(k) ? false : true);
+      if (keys.length === 0) {
+          if (path) addRow(path, "{}"); 
+          return; 
+      }
       for (const k of keys) walk(value[k], path ? `${path}.${k}` : k);
       return;
     }
@@ -602,15 +681,46 @@ function wireSocket() {
     }
   });
 
-  socket.on("component_update", (payload) => {
+  socket.on("component_update", async (payload) => {
     if (payload.server_id !== state.selectedServerId) return;
-    const card = document.querySelector(`.card[data-category="${payload.category}"]`);
+
+    // Only update the specific category that changed, not all categories
+    const category = payload.category;
+    const card = document.querySelector(`.card[data-category="${category}"]`);
     if (!card) return;
+
+    // For storage, we need to fetch all sub-categories
+    let comps;
+    if (category === "storage") {
+      const componentsByCategory = await api(`/api/servers/${state.selectedServerId}/components`);
+      comps = (componentsByCategory["storage"] || []).concat(
+        componentsByCategory["storage_controller"] || [],
+        componentsByCategory["storage_drive"] || [],
+        componentsByCategory["storage_volume"] || []
+      );
+    } else {
+      comps = payload.components || [];
+    }
+
+    // Update the count badge
     const countEl = card.querySelector(".count");
-    if (countEl) countEl.textContent = payload.components.length;
-    const worst = worstHealth(payload.components);
+    if (countEl) countEl.textContent = comps.length;
+
+    // Update the health dot on the card header
+    const worst = worstHealth(comps);
+    const existingDot = card.querySelector(".card-header .dot[style]");
+    if (existingDot && worst) {
+      existingDot.style.background = healthDotColor(worst);
+    }
+
+    // Only rebuild the body if the card is open
     if (card.classList.contains("open")) {
-      renderCategoryBody(card.querySelector(".card-body"), payload.category, payload.components);
+      const body = card.querySelector(".card-body");
+      // Save scroll position of the card body
+      const scrollTop = body.scrollTop;
+      renderCategoryBody(body, category, comps);
+      // Restore scroll position
+      body.scrollTop = scrollTop;
     }
   });
 

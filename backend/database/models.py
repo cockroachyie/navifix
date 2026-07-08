@@ -189,6 +189,7 @@ class Server(db.Model):
             "health_status": self.health_status,
             "power_state": self.power_state,
             "last_successful_poll": self.last_successful_poll.isoformat() if self.last_successful_poll else None,
+            "last_poll_error": self.last_poll_error,
         }
 
     def to_dict(self):

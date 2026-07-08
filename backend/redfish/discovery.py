@@ -40,6 +40,7 @@ describing everything found:
       "<chassis_uri>": {
           "power": "...", "thermal": "...", "assembly": "...",
           "network_adapters": "...", "pcie_devices": "...",
+          "pcie_slots": "...", "cables": "...", "batteries": "...",
           "log_services": "...",
       }, ...
   },
@@ -79,6 +80,7 @@ CHASSIS_LINK_KEYS = {
     "NetworkAdapters": "network_adapters",
     "PCIeDevices": "pcie_devices",
     "PCIeSlots": "pcie_slots",
+    "Cables": "cables",
     "LogServices": "log_services",
     "Drives": "drives",
     # Newer (2021+) schema versions split Power/Thermal into these -

@@ -33,10 +33,41 @@ const HISTORY_METRICS = {
   processor: [["cpu_temperature", "CPU Temp (C)"]],
 };
 
+// Human-readable labels for connection status enum values
+const CONNECTION_STATUS_LABELS = {
+  connected:   "Connected",
+  auth_failed: "Authentication Failed",
+  unreachable: "Unreachable",
+  unknown:     "Unknown",
+};
+
+function formatConnectionStatus(raw) {
+  return CONNECTION_STATUS_LABELS[raw] || raw || "Unknown";
+}
+
+// Translate raw last_poll_error into a user-friendly message
+function formatPollError(error, connectionStatus) {
+  if (!error) {
+    if (connectionStatus === "auth_failed") return "Invalid username or password, or the BMC rejected the session.";
+    if (connectionStatus === "unreachable") return "Unable to reach the BMC. Check the IP address and network connectivity.";
+    return null;
+  }
+  const e = error.toLowerCase();
+  if (e.includes("decrypt"))           return "Encryption key changed — re-add this server with its BMC password.";
+  if (e.includes("authentication"))    return "Invalid username or password.";
+  if (e.includes("timeout"))           return "Connection timed out — the BMC may be slow or unreachable.";
+  if (e.includes("unreachable") || e.includes("connect")) return "Unable to reach the BMC — check network connectivity.";
+  if (e.includes("ssl") || e.includes("tls") || e.includes("certificate")) return "SSL/TLS certificate error.";
+  if (e.includes("refused"))           return "Connection refused — the Redfish service may not be running.";
+  if (e.includes("500"))               return "Internal server error on the BMC.";
+  return error;
+}
+
 let state = {
   servers: [],
   selectedServerId: null,
   openCards: new Set(["chassis"]),   // categories expanded by default
+  openComponents: new Set(),         // odata_ids of expanded component items
   alerts: [],
   charts: {},                        // category -> Chart.js instance
 };
@@ -124,7 +155,7 @@ function renderServerList() {
         <div class="server-ip">${escapeHtml(s.ip_address)}</div>
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
-        <span class="conn-indicator" style="background:${connDotColor(s.connection_status)}" title="${s.connection_status}"></span>
+        <span class="conn-indicator" style="background:${connDotColor(s.connection_status)}" title="${formatConnectionStatus(s.connection_status)}"></span>
         <i class="fa-solid ${s.power_state === 'On' ? 'fa-power-off' : 'fa-circle-stop'} power-icon" title="${s.power_state}"></i>
       </div>
     `;
@@ -167,6 +198,9 @@ async function renderMain() {
 function renderHeader(server) {
   const header = $("#serverHeader");
   const lastUpdated = server.last_successful_poll ? new Date(server.last_successful_poll).toLocaleString() : "never";
+  const connLabel = formatConnectionStatus(server.connection_status);
+  const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
+  const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
   header.innerHTML = `
     <div>
       <h1>${escapeHtml(server.display_name || server.hostname)}</h1>
@@ -174,14 +208,26 @@ function renderHeader(server) {
     </div>
     <span class="pill ${healthClass(server.health_status)}"><span class="dot" style="background:${healthDotColor(server.health_status)}"></span>${server.health_status || "Unknown"}</span>
     <span class="pill ${server.power_state === 'On' ? 'pill-ok' : 'pill-unknown'}"><i class="fa-solid fa-power-off"></i> ${server.power_state || "Unknown"}</span>
-    <span class="pill ${server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${server.connection_status || "unknown"}</span>
+    <span class="pill ${connPillClass}" ${errorDetail ? `title="${escapeHtml(errorDetail)}"` : ''}><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${connLabel}</span>
     <div class="header-stats">
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
       <div class="stat"><div class="label">Service Tag</div><div class="value">${escapeHtml(server.service_tag || "-")}</div></div>
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
+      <div class="stat"><button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button></div>
       <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>
     </div>
   `;
+  if (errorDetail && server.connection_status !== 'connected') {
+    const errBanner = document.createElement('div');
+    errBanner.className = 'header-error-banner';
+    errBanner.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> <span style="flex:1">${escapeHtml(errorDetail)}</span> <button class="btn-primary" id="errUpdateCredsBtn" style="padding:4px 10px;font-size:11px;">Update credentials</button>`;
+    header.appendChild(errBanner);
+    $("#errUpdateCredsBtn").addEventListener("click", () => {
+      openEditServerModal(server);
+      setTimeout(() => $("#e_password").focus(), 100);
+    });
+  }
+  $("#editServerBtn").addEventListener("click", () => openEditServerModal(server));
   $("#pollNowBtn").addEventListener("click", async () => {
     await api(`/api/servers/${state.selectedServerId}/poll-now`, { method: "POST" });
     toast("Poll queued");
@@ -273,7 +319,10 @@ function renderCategoryBody(body, category, components) {
 
 function buildComponentItem(c) {
   const item = document.createElement("div");
-  item.className = "component-item";
+  const itemId = c.odata_id || c.name || '';
+  const wasOpen = state.openComponents.has(itemId);
+  item.className = "component-item" + (wasOpen ? " open" : "");
+  item.dataset.odataId = itemId;
   item.innerHTML = `
     <div class="component-item-header">
       <span class="dot" style="width:7px;height:7px;border-radius:50%;background:${healthDotColor(c.health)};flex-shrink:0;"></span>
@@ -286,12 +335,23 @@ function buildComponentItem(c) {
   const itemHeader = item.querySelector(".component-item-header");
   const props = item.querySelector(".component-props");
   itemHeader.addEventListener("click", () => {
+    const nowOpen = !item.classList.contains("open");
     item.classList.toggle("open");
-    if (item.classList.contains("open") && !props.dataset.rendered) {
-      props.appendChild(buildPropGrid(c.properties));
-      props.dataset.rendered = "1";
+    if (nowOpen) {
+      state.openComponents.add(itemId);
+      if (!props.dataset.rendered) {
+        props.appendChild(buildPropGrid(c.properties));
+        props.dataset.rendered = "1";
+      }
+    } else {
+      state.openComponents.delete(itemId);
     }
   });
+  // If it was previously open, render the property grid immediately
+  if (wasOpen && !props.dataset.rendered) {
+    props.appendChild(buildPropGrid(c.properties));
+    props.dataset.rendered = "1";
+  }
   return item;
 }
 
@@ -597,6 +657,77 @@ function wireAddServerModal() {
 }
 
 // ---------------------------------------------------------------------
+// Edit server modal
+// ---------------------------------------------------------------------
+let editServerId = null;
+
+function openEditServerModal(server) {
+  editServerId = server.id;
+  $("#e_display_name").value = server.display_name || server.hostname;
+  $("#e_username").value = server.username || "";
+  $("#e_password").value = "";
+  $("#e_interval").value = server.polling_interval_seconds || 30;
+  $("#editServerError").style.display = "none";
+  $("#editServerModal").classList.add("open");
+}
+
+function wireEditServerModal() {
+  const modal = $("#editServerModal");
+  $("#cancelEditServer").addEventListener("click", () => modal.classList.remove("open"));
+  
+  $("#submitEditServer").addEventListener("click", async () => {
+    const errorEl = $("#editServerError");
+    errorEl.style.display = "none";
+    const payload = {
+      display_name: $("#e_display_name").value.trim(),
+      username: $("#e_username").value.trim(),
+      polling_interval_seconds: parseInt($("#e_interval").value, 10) || 30,
+    };
+    const pwd = $("#e_password").value;
+    if (pwd) payload.password = pwd;
+    
+    try {
+      await api(`/api/servers/${editServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
+      modal.classList.remove("open");
+      await loadServers();
+      if (state.selectedServerId === editServerId) {
+        await api(`/api/servers/${editServerId}/poll-now`, { method: "POST" });
+        toast("Credentials updated - checking connection...");
+      } else {
+        toast("Server updated");
+      }
+    } catch (e) {
+      errorEl.textContent = e.message;
+      errorEl.style.display = "block";
+    }
+  });
+
+  $("#deleteServerBtn").addEventListener("click", async () => {
+    if (!confirm("Are you sure you want to remove this server?")) return;
+    try {
+      await api(`/api/servers/${editServerId}`, { method: "DELETE" });
+      modal.classList.remove("open");
+      if (state.selectedServerId === editServerId) {
+        state.selectedServerId = null;
+        $("#main").innerHTML = `
+          <div class="no-server-selected">
+            <i class="fa-solid fa-server" style="font-size: 40px; color: var(--accent); opacity:.4;"></i>
+            <div style="margin-top:12px; font-size:15px; font-weight:600;">Select a server</div>
+            <div style="font-size:12px; color:var(--text-faint);">Choose a server from the sidebar to view its hardware status</div>
+          </div>
+        `;
+      }
+      await loadServers();
+      toast("Server removed");
+    } catch (e) {
+      const errorEl = $("#editServerError");
+      errorEl.textContent = e.message;
+      errorEl.style.display = "block";
+    }
+  });
+}
+
+// ---------------------------------------------------------------------
 // WebSocket wiring
 // ---------------------------------------------------------------------
 let socket;
@@ -626,26 +757,44 @@ function wireSocket() {
 
   socket.on("component_update", async (payload) => {
     if (payload.server_id !== state.selectedServerId) return;
-    
-    const componentsByCategory = await api(`/api/servers/${state.selectedServerId}/components`);
-    for (const category of CATEGORY_ORDER) {
-      let comps = componentsByCategory[category] || [];
-      if (category === "storage") {
-        comps = comps.concat(
-          componentsByCategory["storage_controller"] || [],
-          componentsByCategory["storage_drive"] || [],
-          componentsByCategory["storage_volume"] || []
-        );
-      }
-      
-      const card = document.querySelector(`.card[data-category="${category}"]`);
-      if (card) {
-        const countEl = card.querySelector(".count");
-        if (countEl) countEl.textContent = comps.length;
-        if (card.classList.contains("open")) {
-          renderCategoryBody(card.querySelector(".card-body"), category, comps);
-        }
-      }
+
+    // Only update the specific category that changed, not all categories
+    const category = payload.category;
+    const card = document.querySelector(`.card[data-category="${category}"]`);
+    if (!card) return;
+
+    // For storage, we need to fetch all sub-categories
+    let comps;
+    if (category === "storage") {
+      const componentsByCategory = await api(`/api/servers/${state.selectedServerId}/components`);
+      comps = (componentsByCategory["storage"] || []).concat(
+        componentsByCategory["storage_controller"] || [],
+        componentsByCategory["storage_drive"] || [],
+        componentsByCategory["storage_volume"] || []
+      );
+    } else {
+      comps = payload.components || [];
+    }
+
+    // Update the count badge
+    const countEl = card.querySelector(".count");
+    if (countEl) countEl.textContent = comps.length;
+
+    // Update the health dot on the card header
+    const worst = worstHealth(comps);
+    const existingDot = card.querySelector(".card-header .dot[style]");
+    if (existingDot && worst) {
+      existingDot.style.background = healthDotColor(worst);
+    }
+
+    // Only rebuild the body if the card is open
+    if (card.classList.contains("open")) {
+      const body = card.querySelector(".card-body");
+      // Save scroll position of the card body
+      const scrollTop = body.scrollTop;
+      renderCategoryBody(body, category, comps);
+      // Restore scroll position
+      body.scrollTop = scrollTop;
     }
   });
 
@@ -677,6 +826,7 @@ function wireDrawer() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   wireAddServerModal();
+  wireEditServerModal();
   wireDrawer();
   wireSocket();
   $("#serverSearch").addEventListener("input", renderServerList);

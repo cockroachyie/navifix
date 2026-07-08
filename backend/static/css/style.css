@@ -188,6 +188,19 @@ button, input, select {
   color: var(--text-dim);
   font-family: var(--mono);
 }
+.header-error-banner {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 14px;
+  background: rgba(231,76,60,0.1);
+  border: 1px solid rgba(231,76,60,0.3);
+  border-radius: 6px;
+  color: var(--crit);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .header-stats {
   display: flex;
   gap: 22px;
@@ -219,7 +232,7 @@ button, input, select {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
+  overflow: visible;
 }
 .card-header {
   display: flex;
@@ -250,17 +263,19 @@ button, input, select {
 .component-props {
   display: none;
   padding: 4px 16px 14px 40px;
+  overflow-x: auto;
 }
 .component-item.open .component-props { display: block; }
 .prop-grid {
   display: grid;
-  grid-template-columns: minmax(120px, 220px) 1fr;
+  grid-template-columns: minmax(140px, max-content) 1fr;
   gap: 3px 14px;
   font-family: var(--mono);
   font-size: 11.5px;
+  min-width: min-content;
 }
-.prop-grid .k { color: var(--text-faint); word-break: break-word; }
-.prop-grid .v { color: var(--text); word-break: break-word; white-space: pre-wrap; }
+.prop-grid .k { color: var(--text-faint); white-space: nowrap; }
+.prop-grid .v { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
 
 .card-empty { padding: 16px; color: var(--text-faint); font-style: italic; }
 
@@ -317,11 +332,12 @@ button, input, select {
   border-radius: 6px; padding: 6px 10px;
 }
 .log-row {
-  display: grid; grid-template-columns: 90px 130px 1fr; gap: 10px;
+  display: grid; grid-template-columns: 90px 150px 1fr; gap: 10px;
   padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.03); font-size: 12px;
+  align-items: start;
 }
 .log-row .sev { font-weight: 700; text-transform: uppercase; font-size: 10px; }
-.log-row .ts { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.log-row .ts { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 
 /* ---------------- History chart ---------------- */
 .history-toolbar { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; align-items: center; }

@@ -205,10 +205,16 @@ class SessionManager:
         with self._lock:
             existing = self._sessions.get(server_id)
             if existing and existing.base_url == base_url.rstrip("/"):
-                # credentials may have been updated in the UI - refresh them
-                existing.username = username
-                existing.password = password
-                return existing
+                # If credentials have changed (e.g. updated in the UI), we must
+                # completely invalidate the old session state, tokens, and basic
+                # auth fallback flags so we start fresh.
+                if existing.username != username or existing.password != password:
+                    existing.logout()
+                    self._sessions.pop(server_id, None)
+                    existing = None
+                else:
+                    return existing
+            
             session = RedfishSession(base_url, username, password, self.config, server_id)
             self._sessions[server_id] = session
             return session

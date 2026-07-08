@@ -3,10 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Redfish Fleet Monitor</title>
+<title>Redfish Fleet Monitor — Hardware Monitoring</title>
+<meta name="description" content="Production-grade server hardware monitoring platform using Redfish API. Monitor Dell iDRAC, HPE iLO, Lenovo XClarity, and any Redfish-compliant BMC.">
+
+<!-- Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- Icons -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+<!-- App CSS -->
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -15,7 +22,10 @@
 
   <!-- Top bar -->
   <div class="topbar">
-    <div class="brand"><span class="dot"></span> Redfish Fleet Monitor</div>
+    <div class="brand">
+      <span class="dot"></span>
+      Redfish Fleet Monitor
+    </div>
     <div class="topbar-actions">
       <button class="icon-btn" id="alertsBtn" title="Alerts">
         <i class="fa-solid fa-bell"></i>
@@ -28,29 +38,30 @@
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-search">
-      <input type="text" id="serverSearch" placeholder="Search servers...">
+      <input type="text" id="serverSearch" placeholder="Search servers..." autocomplete="off">
       <button class="btn-primary" id="addServerBtn" title="Add server"><i class="fa-solid fa-plus"></i></button>
     </div>
     <div class="server-list" id="serverList">
-      <div class="sidebar-empty">No servers yet. Click + to add one.</div>
+      <div class="sidebar-empty">No servers yet. Click <b>+</b> to add one.</div>
     </div>
   </div>
 
-  <!-- Main -->
+  <!-- Main content -->
   <div class="main" id="main">
     <div class="no-server-selected">
-      <i class="fa-solid fa-server" style="font-size: 32px;"></i>
-      <div>Select a server to view its hardware status</div>
+      <i class="fa-solid fa-server" style="font-size: 40px; color: var(--accent); opacity:.4;"></i>
+      <div style="margin-top:12px; font-size:15px; font-weight:600;">Select a server</div>
+      <div style="font-size:12px; color:var(--text-faint);">Choose a server from the sidebar to view its hardware status</div>
     </div>
   </div>
 
 </div>
 
-<!-- Alerts drawer -->
+<!-- Alerts drawer overlay -->
 <div class="drawer-overlay" id="drawerOverlay"></div>
 <div class="drawer" id="alertsDrawer">
   <div class="drawer-header">
-    <h2>Alerts</h2>
+    <h2><i class="fa-solid fa-triangle-exclamation" style="color:var(--warn);margin-right:8px;"></i>Alerts</h2>
     <button class="icon-btn" id="closeDrawerBtn"><i class="fa-solid fa-xmark"></i></button>
   </div>
   <div class="drawer-body" id="alertsList"></div>
@@ -59,24 +70,43 @@
 <!-- Add server modal -->
 <div class="modal-overlay" id="addServerModal">
   <div class="modal">
-    <h2>Add server</h2>
-    <div class="field"><label>Hostname / Display name</label><input id="f_hostname" placeholder="web-node-042"></div>
-    <div class="field"><label>BMC IP address</label><input id="f_ip" placeholder="10.20.30.40"></div>
-    <div class="field"><label>Username</label><input id="f_username" placeholder="root"></div>
-    <div class="field"><label>Password</label><input id="f_password" type="password"></div>
-    <div class="field"><label>Polling interval (seconds)</label><input id="f_interval" value="30"></div>
+    <h2><i class="fa-solid fa-plus-circle" style="color:var(--accent);margin-right:8px;font-size:16px;"></i>Add Server</h2>
+    <div class="field">
+      <label>Hostname / Display name</label>
+      <input id="f_hostname" placeholder="web-node-042" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>BMC IP address</label>
+      <input id="f_ip" placeholder="192.168.1.100" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>BMC Username</label>
+      <input id="f_username" placeholder="root" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>BMC Password</label>
+      <input id="f_password" type="password" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Polling interval (seconds)</label>
+      <input id="f_interval" value="30" type="number" min="10" max="3600">
+    </div>
     <div class="modal-error" id="addServerError" style="display:none;"></div>
     <div class="modal-actions">
       <button class="btn-secondary" id="cancelAddServer">Cancel</button>
-      <button class="btn-primary" id="submitAddServer">Add server</button>
+      <button class="btn-primary" id="submitAddServer"><i class="fa-solid fa-server"></i> Add server</button>
     </div>
   </div>
 </div>
 
+<!-- Toast notifications -->
 <div class="toast-container" id="toastContainer"></div>
 
+<!-- JS libs -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<!-- App -->
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@ batteries or CMOS/BIOS backup batteries reported at the chassis level.
 Not every server has any - this collector simply returns an empty list
 when the resource is absent, which is expected and not an error.
 """
-from ..collectors.common import component, reading
+from .common import component, reading
 from database.models import ComponentCategory
 
 

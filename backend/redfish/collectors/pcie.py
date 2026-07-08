@@ -7,6 +7,9 @@ Redfish resources consumed
   -> PCIeDevices/{id}/PCIeFunctions (collection) -> PCIeFunctions/{id}
 - Chassis/{id}/PCIeDevices (collection) — same device, exposed at chassis level
   on some vendors (Dell iDRAC in particular links them from both places)
+- Chassis/{id}/PCIeSlots — physical slot information
+- Chassis/{id}/Cables — physical cable/connector inventory (newer schema, some
+  vendors use this for PCIe cables, SAS/NVMe backplane cables, etc.)
 
 Captures every PCIe device and its functions: DeviceClass (GPU, NIC, RAID,
 HBA, etc.), Manufacturer, DeviceId, VendorId, SubsystemId, SubsystemVendorId,
@@ -91,5 +94,25 @@ def collect(client, server, topology):
                         components.append(component(
                             ComponentCategory.PCIE_DEVICE, slot_id, name, slot,
                         ))
+
+        # ── Cables collection (newer Redfish schema, some vendors) ───────
+        # Chassis/{id}/Cables exposes physical cable/connector inventory.
+        # Included here because cables are most naturally shown alongside
+        # PCI/expansion devices in the "PCI / Cables" UI card.
+        cables_uri = links.get("cables")
+        if cables_uri:
+            for cable in collection_members(client, cables_uri):
+                cable_uri = cable.get("@odata.id")
+                if cable_uri and cable_uri not in seen:
+                    seen.add(cable_uri)
+                    cable_name = (
+                        cable.get("Name")
+                        or cable.get("CableType", "Cable")
+                        + " "
+                        + cable.get("Id", "")
+                    ).strip()
+                    components.append(component(
+                        ComponentCategory.PCIE_DEVICE, cable_uri, cable_name, cable,
+                    ))
 
     return components, []
