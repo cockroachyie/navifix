@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from .session import RedfishSession, RedfishAuthError, RedfishUnreachableError
+from .session import RedfishSession, RedfishAuthError, RedfishUnreachableError, format_httpx_exception
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +40,12 @@ class RedfishClient:
 
     def _request(self, method: str, path: str, json_body: dict | None = None) -> dict | None:
         attempts = 0
-        last_exc = None
+        last_exc_str = ""
         while attempts < self.config.REDFISH_MAX_RETRIES:
             attempts += 1
             try:
                 client = self.session.get_http_client()
-                with client:
-                    resp = client.request(method, path, json=json_body)
+                resp = client.request(method, path, json=json_body)
 
                 if resp.status_code == 404:
                     return None
@@ -67,17 +66,22 @@ class RedfishClient:
                     return {}
                 return resp.json()
 
-            except (httpx.ConnectError, httpx.TimeoutException, RedfishUnreachableError) as exc:
-                last_exc = exc
+            except (httpx.RequestError, RedfishUnreachableError) as exc:
+                self.session.invalidate()
+                if isinstance(exc, RedfishUnreachableError):
+                    last_exc_str = str(exc)
+                else:
+                    last_exc_str = format_httpx_exception(exc)
+                    
                 wait = self.config.REDFISH_RETRY_BACKOFF_SECONDS * attempts
                 logger.warning(
                     "Redfish request failed (%s/%s) for %s%s: %s - retrying in %.1fs",
-                    attempts, self.config.REDFISH_MAX_RETRIES, self.session.base_url, path, exc, wait,
+                    attempts, self.config.REDFISH_MAX_RETRIES, self.session.base_url, path, last_exc_str, wait,
                 )
                 time.sleep(wait)
             except RedfishAuthError:
                 raise
 
         raise RedfishUnreachableError(
-            f"Exhausted retries reaching {self.session.base_url}{path}: {last_exc}"
+            f"Exhausted retries reaching {self.session.base_url}{path}: {last_exc_str}"
         )

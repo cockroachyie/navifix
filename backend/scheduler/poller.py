@@ -17,6 +17,7 @@ BMC HTTP calls are I/O-bound so threads (not processes) are appropriate,
 and httpx releases the GIL during network waits.
 """
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -75,6 +76,8 @@ class PollingEngine:
         self.scheduler = BackgroundScheduler(daemon=True)
         self._topology_cache: dict = {}
         self._last_inventory_refresh: dict = {}
+        self._active_polls = set()
+        self._active_polls_lock = threading.Lock()
 
     # -- lifecycle -----------------------------------------------------
 
@@ -114,20 +117,39 @@ class PollingEngine:
                 interval = server.polling_interval_seconds or self.config["DEFAULT_POLLING_INTERVAL_SECONDS"]
                 if last and (now - last).total_seconds() < interval:
                     continue
+                
+                server_id_str = str(server.id)
+                with self._active_polls_lock:
+                    if server_id_str in self._active_polls:
+                        logger.warning("Skipping scheduled poll for %s: previous poll still executing", server.hostname)
+                        continue
+                    self._active_polls.add(server_id_str)
+                    
                 self.executor.submit(self._poll_server_safe, server.id)
 
     def poll_server_now(self, server_id: str):
         """Immediate on-demand refresh (called from /api/servers/<id>/poll-now)."""
+        server_id_str = str(server_id)
+        with self._active_polls_lock:
+            if server_id_str in self._active_polls:
+                logger.warning("Ignoring manual poll request for %s: poll already in progress", server_id_str)
+                return
+            self._active_polls.add(server_id_str)
+            
         self.executor.submit(self._poll_server_safe, server_id)
 
     def _poll_server_safe(self, server_id: str):
         """Wrapper that catches all exceptions so a broken server never kills
         the thread pool worker."""
-        with self.app.app_context():
-            try:
-                self._poll_server(server_id)
-            except Exception:
-                logger.exception("Unhandled error polling server %s", server_id)
+        try:
+            with self.app.app_context():
+                try:
+                    self._poll_server(server_id)
+                except Exception:
+                    logger.exception("Unhandled error polling server %s", server_id)
+        finally:
+            with self._active_polls_lock:
+                self._active_polls.discard(str(server_id))
 
     # -- core poll cycle ---------------------------------------------------
 

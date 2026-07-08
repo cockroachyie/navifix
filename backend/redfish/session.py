@@ -42,6 +42,23 @@ class RedfishUnreachableError(Exception):
     """Raised when the BMC cannot be reached at all (network/TLS/timeout)."""
 
 
+def format_httpx_exception(exc: Exception) -> str:
+    msg = str(exc)
+    if isinstance(exc, httpx.ConnectTimeout):
+        return f"Connection timed out (is the BMC online/reachable?): {msg}"
+    if isinstance(exc, httpx.ReadTimeout):
+        return f"Read timed out (BMC is too slow to respond): {msg}"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"Timeout: {msg}"
+    if isinstance(exc, httpx.ConnectError):
+        if "SSL" in msg or "certificate" in msg.lower():
+            return f"SSL/TLS Error: {msg}"
+        return f"Connection refused or unreachable: {msg}"
+    if isinstance(exc, httpx.NetworkError):
+        return f"Network error: {msg}"
+    return str(exc)
+
+
 class RedfishSession:
     """
     Holds live authentication state for a single BMC. One instance per
@@ -63,6 +80,7 @@ class RedfishSession:
         self.uses_basic_auth_fallback = False
 
         self._lock = threading.Lock()
+        self._client: httpx.Client | None = None
 
     # -- public API -------------------------------------------------------
 
@@ -70,29 +88,39 @@ class RedfishSession:
         """Return an httpx.Client pre-configured with valid auth headers,
         authenticating or refreshing first if necessary."""
         self._ensure_valid_session()
-        headers = {"OData-Version": "4.0"}
-        if self.uses_basic_auth_fallback:
-            auth = (self.username, self.password)
-            return httpx.Client(
-                base_url=self.base_url,
-                headers=headers,
-                auth=auth,
-                verify=self.config.REDFISH_VERIFY_TLS,
-                timeout=self.config.REDFISH_HTTP_TIMEOUT,
-            )
-        headers["X-Auth-Token"] = self.token
-        return httpx.Client(
-            base_url=self.base_url,
-            headers=headers,
-            verify=self.config.REDFISH_VERIFY_TLS,
-            timeout=self.config.REDFISH_HTTP_TIMEOUT,
-        )
+        
+        with self._lock:
+            if self._client is not None:
+                return self._client
+                
+            headers = {"OData-Version": "4.0"}
+            if self.uses_basic_auth_fallback:
+                auth = (self.username, self.password)
+                self._client = httpx.Client(
+                    base_url=self.base_url,
+                    headers=headers,
+                    auth=auth,
+                    verify=self.config.REDFISH_VERIFY_TLS,
+                    timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                )
+            else:
+                headers["X-Auth-Token"] = self.token
+                self._client = httpx.Client(
+                    base_url=self.base_url,
+                    headers=headers,
+                    verify=self.config.REDFISH_VERIFY_TLS,
+                    timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                )
+            return self._client
 
     def invalidate(self):
         """Force the next call to re-authenticate (e.g. after a 401)."""
         with self._lock:
             self.token = None
             self.expires_at = None
+            if self._client is not None:
+                self._client.close()
+                self._client = None
 
     def logout(self):
         """Explicitly DELETE the session on the BMC to free the session slot."""
@@ -112,6 +140,10 @@ class RedfishSession:
             self.token = None
             self.session_uri = None
             self.expires_at = None
+            with self._lock:
+                if self._client is not None:
+                    self._client.close()
+                    self._client = None
 
     # -- internals ----------------------------------------------------------
 
@@ -135,10 +167,9 @@ class RedfishSession:
                 timeout=self.config.REDFISH_HTTP_TIMEOUT,
             ) as client:
                 resp = client.post(SESSION_SERVICE_PATH, json=payload)
-        except httpx.ConnectError as exc:
-            raise RedfishUnreachableError(f"Cannot reach {self.base_url}: {exc}") from exc
-        except httpx.TimeoutException as exc:
-            raise RedfishUnreachableError(f"Timeout reaching {self.base_url}: {exc}") from exc
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            formatted = format_httpx_exception(exc)
+            raise RedfishUnreachableError(f"Cannot reach {self.base_url}: {formatted}") from exc
 
         if resp.status_code == 404:
             # SessionService not implemented - fall back to HTTP Basic Auth.
@@ -175,8 +206,9 @@ class RedfishSession:
                 timeout=self.config.REDFISH_HTTP_TIMEOUT,
             ) as client:
                 resp = client.get("/redfish/v1/")
-        except httpx.HTTPError as exc:
-            raise RedfishUnreachableError(str(exc)) from exc
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError) as exc:
+            formatted = format_httpx_exception(exc)
+            raise RedfishUnreachableError(formatted) from exc
         if resp.status_code in (401, 403):
             raise RedfishAuthError(f"Basic auth rejected by {self.base_url}")
         self.expires_at = None  # basic auth never expires
