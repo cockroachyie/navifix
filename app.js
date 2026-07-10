@@ -71,6 +71,39 @@ function formatStorageValue(key, value) {
   return String(value);
 }
 
+// The 9 curated fields for the Storage drive Summary view (iDRAC-style
+// "Advanced Properties" subset). Order here = display order.
+const STORAGE_SUMMARY_FIELDS = [
+  ["device_description", "Device Description"],
+  ["Manufacturer",       "Manufacturer"],
+  ["product_id",         "Product ID"],
+  ["SerialNumber",       "Serial Number"],
+  ["PartNumber",         "Part Number"],
+  ["CapacityBytes",      "Capacity"],
+  ["block_size_bytes",   "Block Size"],
+  ["controller",         "Controller"],
+  ["predictive_failure", "Predictive Failure"],
+];
+
+// Everything already shown in Summary (plus raw duplicate/fallback keys
+// like FailurePredicted, BlockSizeBytes, Model, SKU) must NOT reappear
+// in Advanced Details.
+const STORAGE_SUMMARY_SKIP_KEYS = new Set([
+  ...STORAGE_SUMMARY_FIELDS.map(([k]) => k),
+  ...Object.keys(STORAGE_SUPERSEDED_KEYS), // FailurePredicted, BlockSizeBytes
+  "Model", "SKU",                          // folded into product_id already
+]);
+
+// Advanced Details skip set: hide only @odata.*, Links, and boilerplate —
+// deliberately do NOT skip "Oem" here, so Dell/HPE/Lenovo/Cisco vendor
+// blocks fall through into Advanced automatically, with no per-vendor code.
+const STORAGE_ADVANCED_SKIP_KEYS = new Set([
+  "@odata.context", "@odata.etag", "@odata.id", "@odata.type",
+  "Id", "Name", "Description", "Links", "Actions", "Assembly",
+  ...STORAGE_SUMMARY_SKIP_KEYS,
+]);
+
+
 
 const HISTORY_METRICS = {
   thermal:   [["temperature", "Temperature (C)"]],
@@ -363,6 +396,14 @@ function renderCategoryBody(body, category, components) {
   }
 }
 
+function renderComponentProperties(c) {
+  if (c.category === "storage_drive") {
+    return buildStorageDriveProperties(c.properties);
+  }
+  return buildPropGrid(c.properties);
+}
+
+
 function buildComponentItem(c) {
   const item = document.createElement("div");
   const itemId = c.odata_id || c.name || '';
@@ -386,7 +427,7 @@ function buildComponentItem(c) {
     if (nowOpen) {
       state.openComponents.add(itemId);
       if (!props.dataset.rendered) {
-        props.appendChild(buildPropGrid(c.properties));
+        props.appendChild(renderComponentProperties(c));
         props.dataset.rendered = "1";
       }
     } else {
@@ -395,7 +436,7 @@ function buildComponentItem(c) {
   });
   // If it was previously open, render the property grid immediately
   if (wasOpen && !props.dataset.rendered) {
-    props.appendChild(buildPropGrid(c.properties));
+    props.appendChild(renderComponentProperties(c));
     props.dataset.rendered = "1";
   }
   return item;
@@ -404,20 +445,25 @@ function buildComponentItem(c) {
 // Flattens a Redfish resource JSON into a flat key -> value property
 // grid so "every available property" is genuinely visible, including
 // nested objects/arrays (rendered as compact JSON) and OEM extensions.
-function buildPropGrid(obj, prefix = "") {
+
+const DEFAULT_SKIP_TOP_LEVEL_KEYS = new Set([
+  "@odata.context", "@odata.etag", "@odata.id", "@odata.type",
+  "Id", "Name", "Description", "Links", "Actions", "Oem", "Assembly"
+]);
+
+function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEVEL_KEYS) {
   const grid = document.createElement("div");
   grid.className = "prop-grid";
-  const skipTopLevelKeys = new Set([
-    "@odata.context", "@odata.etag", "@odata.id", "@odata.type",
-    "Id", "Name", "Description", "Links", "Actions", "Oem", "Assembly"
-  ]);
+  // NOTE: the local `const skipTopLevelKeys = new Set([...])` line that used
+  // to be here is now the function parameter above — delete the old local
+  // declaration, everything else in this function is unchanged.
+
   function walk(value, path) {
     if (value === null || value === undefined) {
       addRow(path, "null");
       return;
     }
 
-    // Skip noisy metadata in nested objects too
     const pathParts = path.split(".");
     const lastPart = pathParts[pathParts.length - 1];
     if (lastPart === "@odata.id" || lastPart === "@odata.type" || lastPart === "@odata.context") {
@@ -442,13 +488,12 @@ function buildPropGrid(obj, prefix = "") {
       }
       for (const k of keys) {
         if (!path) {
-          // Root-level key — apply storage-specific label/format rules first.
           if (STORAGE_SUPERSEDED_KEYS[k] && value[STORAGE_SUPERSEDED_KEYS[k]] !== undefined) {
-            continue; // duplicated by a friendlier key elsewhere in this object, skip
+            continue;
           }
           if (Object.prototype.hasOwnProperty.call(STORAGE_PROPERTY_LABELS, k)) {
             const v = value[k];
-            if (v === null || v === undefined) continue; // hide nulls
+            if (v === null || v === undefined) continue;
             addRow(STORAGE_PROPERTY_LABELS[k], formatStorageValue(k, v));
             continue;
           }
@@ -459,7 +504,7 @@ function buildPropGrid(obj, prefix = "") {
     }
     addRow(path, String(value));
   }
-  
+
   function addRow(path, value) {
     const k = document.createElement("div");
     k.className = "k";
@@ -474,6 +519,50 @@ function buildPropGrid(obj, prefix = "") {
   walk(obj, prefix);
   return grid;
 }
+
+function buildStorageDriveProperties(obj) {
+  const container = document.createElement("div");
+
+  // ---- Summary ----
+  const summaryGrid = document.createElement("div");
+  summaryGrid.className = "prop-grid";
+  for (const [key, label] of STORAGE_SUMMARY_FIELDS) {
+    const v = obj[key];
+    if (v === null || v === undefined) continue; // hide missing fields
+    const k = document.createElement("div");
+    k.className = "k";
+    k.textContent = label;
+    const vEl = document.createElement("div");
+    vEl.className = "v";
+    vEl.textContent = formatStorageValue(key, v);
+    summaryGrid.appendChild(k);
+    summaryGrid.appendChild(vEl);
+  }
+  container.appendChild(summaryGrid);
+
+  // ---- Advanced Details (collapsed by default) ----
+  const advancedGrid = buildPropGrid(obj, "", STORAGE_ADVANCED_SKIP_KEYS);
+  if (advancedGrid.children.length > 0) {
+    const section = document.createElement("div");
+    section.className = "component-item"; // reuse existing collapse styling/CSS
+    section.innerHTML = `
+      <div class="component-item-header">
+        <span class="name">Advanced Details</span>
+        <span class="count">${advancedGrid.children.length / 2}</span>
+        <i class="fa-solid fa-chevron-right chevron" style="font-size:10px;"></i>
+      </div>
+      <div class="component-props"></div>
+    `;
+    section.querySelector(".component-props").appendChild(advancedGrid);
+    section.querySelector(".component-item-header").addEventListener("click", () => {
+      section.classList.toggle("open");
+    });
+    container.appendChild(section);
+  }
+
+  return container;
+}
+
 
 // ---------------------------------------------------------------------
 // History charts (per category, when it has chartable metrics)
@@ -822,4 +911,3 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAlerts();
   setInterval(loadAlerts, 30000);
 });
- 
