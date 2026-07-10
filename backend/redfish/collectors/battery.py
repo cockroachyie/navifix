@@ -1,77 +1,121 @@
-"""
+﻿"""
 redfish/collectors/battery.py
-==============================
-Redfish resources consumed (in lookup priority order)
--------------------------------------------------------
-- Chassis/{id}/Batteries (direct collection link, captured by discovery as
-  CHASSIS_LINK_KEYS["Batteries"] — most direct path when present)
-- Chassis/{id}/PowerSubsystem/Batteries (2021.x+ schema)
-- Chassis/{id}/Power embedded "Batteries" array (older schema fallback)
-
-Batteries in the Redfish world usually mean RAID controller cache-protect
-batteries or CMOS/BIOS backup batteries reported at the chassis level.
-Not every server has any - this collector simply returns an empty list
-when the resource is absent, which is expected and not an error.
 """
+import logging
 from .common import component, reading
 from database.models import ComponentCategory
+
+logger = logging.getLogger(__name__)
+
+
+def _get_dell_oem_batteries(client, chassis_uri, system_uri):
+    members = []
+    chassis_id = chassis_uri.rstrip("/").split("/")[-1]
+    
+    dell_battery_collection = f"/redfish/v1/Dell/Chassis/{chassis_id}/DellControllerBatteryCollection"
+    logger.info("Checking Dell OEM battery collection: %s", dell_battery_collection)
+    coll = client.get(dell_battery_collection)
+    if coll and coll.get("Members"):
+        for m in coll["Members"]:
+            uri = m.get("@odata.id")
+            body = client.get(uri) if uri else None
+            if body:
+                normalized = {
+                    "@odata.id": uri,
+                    "Name": body.get("Name", "RAID Controller Battery"),
+                    "Status": {
+                        "Health": body.get("PrimaryStatus", "Unknown"),
+                        "State": "Enabled" if body.get("PrimaryStatus") else "Unknown"
+                    },
+                    "RAIDState": body.get("RAIDState"),
+                    "FQDD": body.get("FQDD"),
+                    "_source": "Dell OEM DellControllerBattery",
+                    "_raw_oem": body,
+                }
+                members.append(normalized)
+                logger.info("Found Dell OEM controller battery: %s", body.get("Name"))
+    else:
+        logger.info("No Dell OEM controller battery at %s", dell_battery_collection)
+
+    if system_uri:
+        system_id = system_uri.rstrip("/").split("/")[-1]
+        sensor_uri = f"/redfish/v1/Dell/Systems/{system_id}/DellPresenceAndStatusSensorCollection"
+        logger.info("Checking Dell presence sensors: %s", sensor_uri)
+        sensor_coll = client.get(sensor_uri)
+        if sensor_coll:
+            for m in sensor_coll.get("Members", []):
+                uri = m.get("@odata.id")
+                body = client.get(uri) if uri else None
+                if body and "battery" in (body.get("ElementName") or "").lower():
+                    normalized = {
+                        "@odata.id": uri,
+                        "Name": body.get("ElementName", "CMOS Battery"),
+                        "Status": {
+                            "Health": "OK" if body.get("PrimaryStatus") == "OK" else "Warning",
+                            "State": body.get("EnabledState", "Unknown"),
+                        },
+                        "_source": "Dell OEM DellPresenceAndStatusSensor",
+                        "_raw_oem": body,
+                    }
+                    members.append(normalized)
+                    logger.info("Found Dell OEM CMOS battery: %s", body.get("ElementName"))
+    return members
 
 
 def collect(client, server, topology):
     components, readings = [], []
     seen_uris = set()
 
+    systems = topology.get("systems", [])
+    system_uri = systems[0] if systems else None
+
     for chassis_uri, links in topology.get("per_chassis", {}).items():
         battery_members = []
 
-        # Primary path: direct Batteries collection link discovered from the
-        # Chassis body (CHASSIS_LINK_KEYS["Batteries"] -> topology["batteries"]).
-        # This is the most direct and reliable path when supported.
-        batteries_coll_uri = links.get("batteries")
-        if batteries_coll_uri:
-            coll = client.get(batteries_coll_uri)
-            for m in (coll or {}).get("Members", []):
-                uri = m.get("@odata.id")
-                if uri and uri not in seen_uris:
-                    body = client.get(uri)
-                    if body:
-                        seen_uris.add(uri)
-                        battery_members.append(body)
-
-        # Secondary path: Newer (2021+) schema — PowerSubsystem -> Batteries
-        power_subsystem_uri = links.get("power_subsystem")
-        if power_subsystem_uri:
-            ps_body = client.get(power_subsystem_uri)
-            if ps_body:
-                batteries_link = (ps_body.get("Batteries") or {}).get("@odata.id")
-                if batteries_link:
-                    coll = client.get(batteries_link)
+        # Standard paths
+        for link_key in ["batteries", "power_subsystem", "power"]:
+            uri = links.get(link_key)
+            if not uri:
+                continue
+            body = client.get(uri)
+            if not body:
+                continue
+            if link_key == "power_subsystem":
+                bat_link = (body.get("Batteries") or {}).get("@odata.id")
+                if bat_link:
+                    coll = client.get(bat_link)
                     for m in (coll or {}).get("Members", []):
-                        uri = m.get("@odata.id")
-                        if uri and uri not in seen_uris:
-                            body = client.get(uri) if uri else None
-                            if body:
-                                seen_uris.add(uri)
-                                battery_members.append(body)
+                        u = m.get("@odata.id")
+                        if u and u not in seen_uris:
+                            b = client.get(u)
+                            if b:
+                                seen_uris.add(u)
+                                battery_members.append(b)
+            elif link_key == "batteries":
+                for m in body.get("Members", []):
+                    u = m.get("@odata.id")
+                    if u and u not in seen_uris:
+                        b = client.get(u)
+                        if b:
+                            seen_uris.add(u)
+                            battery_members.append(b)
+            elif link_key == "power":
+                for b in body.get("Batteries", []):
+                    u = b.get("@odata.id")
+                    if not u or u not in seen_uris:
+                        if u:
+                            seen_uris.add(u)
+                        battery_members.append(b)
 
-        # Tertiary path: older implementations embed Batteries directly in the
-        # Power resource as an inline array (not a collection link).
-        power_uri = links.get("power")
-        if power_uri:
-            power_body = client.get(power_uri)
-            for b in (power_body or {}).get("Batteries", []) if power_body else []:
-                uri = b.get("@odata.id")
-                if not uri or uri not in seen_uris:
-                    if uri:
-                        seen_uris.add(uri)
-                    battery_members.append(b)
+        if not battery_members:
+            logger.info("No standard batteries for %s — trying Dell OEM", chassis_uri)
+            battery_members = _get_dell_oem_batteries(client, chassis_uri, system_uri)
 
         for b in battery_members:
-            odata_id = b.get("@odata.id") or f"{chassis_uri}#battery#{b.get('MemberId', b.get('Name'))}"
+            odata_id = b.get("@odata.id") or f"{chassis_uri}#battery#{b.get('Name', 'unknown')}"
             components.append(component(
                 ComponentCategory.BATTERY, odata_id, b.get("Name", "Battery"), b,
-                location=b.get("Location", {}).get("PartLocation", {}).get("ServiceLabel")
-                if isinstance(b.get("Location"), dict) else None,
+                location=None,
             ))
             cap = b.get("StateOfHealthPercent", {})
             if isinstance(cap, dict):

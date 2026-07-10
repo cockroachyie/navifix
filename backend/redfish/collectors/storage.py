@@ -16,9 +16,20 @@ Model, SerialNumber, MediaType, Protocol, FirmwareVersion, FailurePredicted,
 PredictedMediaLifeLeftPercent (SSD wear), PowerOnHours, RotationSpeedRPM,
 CapableSpeedGbs, CapacityBytes, Status, and any OEM fields.  For every
 virtual disk (Volume) we capture the RAID type, capacity, and status.
+
+Additional fields collected per drive (extended):
+- Predictive Failure  : Drive.FailurePredicted (standard) or
+                        OEM.Dell.DellPhysicalDisk.PredictiveFailureState
+- Block Size          : Drive.BlockSizeBytes (standard)
+- Product ID          : Drive.Model -> Drive.SKU (standard fallback chain)
+- Device Description  : Drive.Description (standard)
+- Controller          : resolved from the controller body passed at collection time
 """
+import logging
 from .common import component, reading, collection_members
 from database.models import ComponentCategory
+
+logger = logging.getLogger(__name__)
 
 _BYTES_TO_GB = 1 / (1024 ** 3)
 
@@ -33,7 +44,7 @@ def collect(client, server, topology):
         storage_uri = links.get("storage")
         if storage_uri:
             for ctrl in collection_members(client, storage_uri):
-                ctrl_id  = ctrl.get("@odata.id")
+                ctrl_id   = ctrl.get("@odata.id")
                 ctrl_name = ctrl.get("Name") or ctrl.get("Id") or "Storage Controller"
 
                 # The controller itself
@@ -49,9 +60,8 @@ def collect(client, server, topology):
                         if not uri or uri in seen_drive_uris:
                             continue
                         seen_drive_uris.add(uri)
-                        _collect_drive(client, uri, components, readings)
+                        _collect_drive(client, uri, components, readings, ctrl_name)
                 elif isinstance(drives_link, dict):
-                    # Some firmware wraps it as a collection link
                     coll_uri = drives_link.get("@odata.id")
                     if coll_uri:
                         for d in collection_members(client, coll_uri):
@@ -59,7 +69,7 @@ def collect(client, server, topology):
                             if not uri or uri in seen_drive_uris:
                                 continue
                             seen_drive_uris.add(uri)
-                            _collect_drive_body(d, components, readings)
+                            _collect_drive_body(d, components, readings, ctrl_name)
 
                 # Virtual disks / Volumes
                 volumes_link = (ctrl.get("Volumes") or {}).get("@odata.id")
@@ -85,7 +95,7 @@ def collect(client, server, topology):
                         dev.get("Name") or "Device", dev,
                     ))
 
-        # ── Chassis-level drives (some BMCs link drives at chassis level) ─
+        # ── Chassis-level drives ────────────────────────────────────────
         for chassis_uri, chassis_links in topology.get("per_chassis", {}).items():
             drives_uri = chassis_links.get("drives")
             if drives_uri:
@@ -94,20 +104,98 @@ def collect(client, server, topology):
                     if not uri or uri in seen_drive_uris:
                         continue
                     seen_drive_uris.add(uri)
-                    _collect_drive_body(drive, components, readings)
+                    _collect_drive_body(drive, components, readings, controller_name=None)
 
     readings = [r for r in readings if r]
     return components, readings
 
 
-def _collect_drive(client, uri, components, readings):
+def _collect_drive(client, uri, components, readings, controller_name=None):
     body = client.get(uri)
     if not body:
+        logger.debug("Could not fetch drive body at %s", uri)
         return
-    _collect_drive_body(body, components, readings)
+    _collect_drive_body(body, components, readings, controller_name)
 
 
-def _collect_drive_body(body, components, readings):
+def _extract_additional_drive_properties(body, controller_name):
+    """
+    Extract the five additional properties required:
+      1. Predictive Failure
+      2. Block Size
+      3. Product ID
+      4. Device Description
+      5. Controller
+
+    Field mapping:
+      - predictive_failure: Drive.FailurePredicted (standard Redfish)
+            fallback: OEM.Dell.DellPhysicalDisk.PredictiveFailureState
+            Chosen because FailurePredicted is the standard field; Dell OEM
+            provides a more descriptive string ("SmartAlertAbsent") as fallback.
+      - block_size_bytes:   Drive.BlockSizeBytes (standard Redfish)
+            No OEM fallback needed — universally supported.
+      - product_id:         Drive.Model (standard) -> Drive.SKU (standard)
+            Model matches iDRAC "Product ID" field exactly (e.g. ST1200MM0108).
+            SKU used as secondary fallback per requirements.
+      - device_description: Drive.Description (standard Redfish)
+            Maps directly to iDRAC "Device Description" field.
+            No OEM fallback needed.
+      - controller:         passed in from the parent controller's Name field.
+            Not available in the Drive resource itself — must be resolved
+            from the controller that linked to this drive.
+    """
+    dell_oem = (body.get("Oem") or {}).get("Dell") or {}
+    dell_disk = dell_oem.get("DellPhysicalDisk") or {}
+
+    # 1. Predictive Failure
+    predictive_failure = body.get("FailurePredicted")
+    if predictive_failure is None:
+        # Dell OEM fallback: PredictiveFailureState is a string
+        # "SmartAlertAbsent" = no failure predicted, anything else = alert
+        oem_state = dell_disk.get("PredictiveFailureState")
+        if oem_state is not None:
+            predictive_failure = oem_state != "SmartAlertAbsent"
+            logger.debug(
+                "FailurePredicted not in standard fields for %s — "
+                "using Dell OEM PredictiveFailureState: %s",
+                body.get("@odata.id"), oem_state
+            )
+        else:
+            logger.debug(
+                "FailurePredicted unavailable for %s (no standard or OEM field)",
+                body.get("@odata.id")
+            )
+
+    # 2. Block Size
+    block_size_bytes = body.get("BlockSizeBytes")
+    if block_size_bytes is None:
+        logger.debug("BlockSizeBytes unavailable for %s", body.get("@odata.id"))
+
+    # 3. Product ID — Model -> SKU fallback chain
+    product_id = body.get("Model") or body.get("SKU")
+    if product_id is None:
+        logger.debug("Product ID unavailable for %s (no Model or SKU)", body.get("@odata.id"))
+
+    # 4. Device Description
+    device_description = body.get("Description")
+    if device_description is None:
+        logger.debug("Description unavailable for %s", body.get("@odata.id"))
+
+    # 5. Controller — passed in from parent, not in drive body
+    controller = controller_name
+    if controller is None:
+        logger.debug("Controller name not passed for drive %s", body.get("@odata.id"))
+
+    return {
+        "predictive_failure":  predictive_failure,
+        "block_size_bytes":    block_size_bytes,
+        "product_id":          product_id,
+        "device_description":  device_description,
+        "controller":          controller,
+    }
+
+
+def _collect_drive_body(body, components, readings, controller_name=None):
     odata_id = body.get("@odata.id")
     name = (
         body.get("Name")
@@ -122,11 +210,16 @@ def _collect_drive_body(body, components, readings):
     if slot:
         name = f"{name} ({slot})"
 
+    # Merge additional properties into the raw body dict so the frontend
+    # receives them automatically via raw_json without any API changes.
+    extra = _extract_additional_drive_properties(body, controller_name)
+    enriched_body = {**body, **extra}
+
     components.append(component(
-        ComponentCategory.STORAGE_DRIVE, odata_id, name, body, location=slot,
+        ComponentCategory.STORAGE_DRIVE, odata_id, name, enriched_body, location=slot,
     ))
 
-    # Time-series
+    # Time-series readings
     wear = body.get("PredictedMediaLifeLeftPercent")
     if wear is not None:
         readings.append(reading("disk_wear", name, wear, "%"))

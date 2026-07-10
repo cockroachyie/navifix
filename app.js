@@ -22,6 +22,55 @@ const CATEGORY_META = {
   security:  { icon: "fa-shield-halved",      label: "Security" },
 };
 const CATEGORY_ORDER = Object.keys(CATEGORY_META);
+// ---------------------------------------------------------------------
+// Storage property display: friendly labels + value formatting.
+// The storage collector merges the full raw Redfish drive resource with
+// a handful of new extracted fields (see storage.py), so buildPropGrid
+// needs to know how to relabel/format the ones that would otherwise
+// leak through as raw snake_case/PascalCase keys.
+// ---------------------------------------------------------------------
+const STORAGE_PROPERTY_LABELS = {
+  // Newly added fields (storage.py _extract_additional_drive_properties)
+  device_description: "Device Description",
+  predictive_failure: "Predictive Failure",
+  block_size_bytes:   "Block Size",
+  product_id:         "Product ID",
+  controller:         "Controller",
+  // Standard Redfish drive fields that were already being collected but
+  // rendered with their raw PascalCase names
+  SerialNumber:       "Serial Number",
+  PartNumber:         "Part Number",
+  CapacityBytes:      "Capacity",
+  Model:              "Model",
+  Manufacturer:       "Manufacturer",
+  Protocol:           "Protocol",
+  MediaType:          "Media Type",
+  FirmwareVersion:    "Firmware Version",
+  RotationSpeedRPM:   "Rotation Speed (RPM)",
+  PredictedMediaLifeLeftPercent: "Predicted Life Left",
+  PowerOnHours:       "Power On Hours",
+  CapableSpeedGbs:    "Capable Speed (Gb/s)",
+};
+
+// storage.py merges `extra` on top of the raw drive body, so the raw
+// standard-Redfish field and the new snake_case field can both be
+// present with the same value. Hide the raw one so it isn't shown twice.
+const STORAGE_SUPERSEDED_KEYS = {
+  FailurePredicted: "predictive_failure",
+  BlockSizeBytes:   "block_size_bytes",
+};
+
+const STORAGE_BYTE_SUFFIX_KEYS = new Set(["block_size_bytes"]);
+
+function formatStorageValue(key, value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (STORAGE_BYTE_SUFFIX_KEYS.has(key) &&
+      (typeof value === "number" || /^\d+$/.test(String(value)))) {
+    return `${value} bytes`;
+  }
+  return String(value);
+}
+
 
 const HISTORY_METRICS = {
   thermal:   [["temperature", "Temperature (C)"]],
@@ -362,18 +411,17 @@ function buildPropGrid(obj, prefix = "") {
     "@odata.context", "@odata.etag", "@odata.id", "@odata.type",
     "Id", "Name", "Description", "Links", "Actions", "Oem", "Assembly"
   ]);
-
   function walk(value, path) {
     if (value === null || value === undefined) {
       addRow(path, "null");
       return;
     }
-    
+
     // Skip noisy metadata in nested objects too
     const pathParts = path.split(".");
     const lastPart = pathParts[pathParts.length - 1];
     if (lastPart === "@odata.id" || lastPart === "@odata.type" || lastPart === "@odata.context") {
-        return; 
+      return;
     }
 
     if (Array.isArray(value)) {
@@ -389,15 +437,29 @@ function buildPropGrid(obj, prefix = "") {
     if (typeof value === "object") {
       const keys = Object.keys(value).filter((k) => !path && skipTopLevelKeys.has(k) ? false : true);
       if (keys.length === 0) {
-          if (path) addRow(path, "{}"); 
-          return; 
+        if (path) addRow(path, "{}");
+        return;
       }
-      for (const k of keys) walk(value[k], path ? `${path}.${k}` : k);
+      for (const k of keys) {
+        if (!path) {
+          // Root-level key — apply storage-specific label/format rules first.
+          if (STORAGE_SUPERSEDED_KEYS[k] && value[STORAGE_SUPERSEDED_KEYS[k]] !== undefined) {
+            continue; // duplicated by a friendlier key elsewhere in this object, skip
+          }
+          if (Object.prototype.hasOwnProperty.call(STORAGE_PROPERTY_LABELS, k)) {
+            const v = value[k];
+            if (v === null || v === undefined) continue; // hide nulls
+            addRow(STORAGE_PROPERTY_LABELS[k], formatStorageValue(k, v));
+            continue;
+          }
+        }
+        walk(value[k], path ? `${path}.${k}` : k);
+      }
       return;
     }
     addRow(path, String(value));
   }
-
+  
   function addRow(path, value) {
     const k = document.createElement("div");
     k.className = "k";
@@ -760,3 +822,4 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAlerts();
   setInterval(loadAlerts, 30000);
 });
+ 
