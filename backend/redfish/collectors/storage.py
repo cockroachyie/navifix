@@ -95,7 +95,47 @@ def collect(client, server, topology):
                         dev.get("Name") or "Device", dev,
                     ))
 
+<<<<<<< HEAD
         # ── Chassis-level drives ────────────────────────────────────────
+=======
+        # ── HPE SmartStorage fallback (iLO 4/5) ─────────────────────────
+        hpe_uri = links.get("storage_hpe")
+        if hpe_uri:
+            smart_storage = client.get(hpe_uri)
+            if smart_storage:
+                controllers_link = (smart_storage.get("Links") or {}).get("ArrayControllers", {}).get("@odata.id")
+                if controllers_link:
+                    for ctrl in collection_members(client, controllers_link):
+                        ctrl_id = ctrl.get("@odata.id")
+                        if not ctrl_id:
+                            continue
+                        ctrl_name = ctrl.get("Name") or ctrl.get("Model") or "Smart Array Controller"
+                        components.append(component(
+                            ComponentCategory.STORAGE_CONTROLLER, ctrl_id, ctrl_name, ctrl,
+                        ))
+                        
+                        # Drives
+                        drives_link = (ctrl.get("Links") or {}).get("PhysicalDrives", {}).get("@odata.id")
+                        if drives_link:
+                            for d in collection_members(client, drives_link):
+                                uri = d.get("@odata.id")
+                                if uri and uri not in seen_drive_uris:
+                                    seen_drive_uris.add(uri)
+                                    _collect_drive_body(d, components, readings)
+                                    
+                        # Logical Drives
+                        logical_link = (ctrl.get("Links") or {}).get("LogicalDrives", {}).get("@odata.id")
+                        if logical_link:
+                            for vol in collection_members(client, logical_link):
+                                vol_id = vol.get("@odata.id")
+                                if vol_id:
+                                    components.append(component(
+                                        ComponentCategory.STORAGE_VOLUME, vol_id,
+                                        vol.get("Name") or vol.get("LogicalDriveName") or "Logical Drive", vol,
+                                    ))
+
+        # ── Chassis-level drives (some BMCs link drives at chassis level) ─
+>>>>>>> 22e9b12 (hp-ilo)
         for chassis_uri, chassis_links in topology.get("per_chassis", {}).items():
             drives_uri = chassis_links.get("drives")
             if drives_uri:

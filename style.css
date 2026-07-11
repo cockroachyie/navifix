@@ -499,10 +499,12 @@ select {
 
 .prop-grid .v {
   color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: normal;
+  white-space: pre;        /* was: pre-wrap */
+  overflow-wrap: normal;   /* was: break-word */
+  word-break: normal;      /* unchanged */
+  overflow-x: auto;        /* new */
   min-width: 60px;
+  max-width: 100%;         /* new */
 }
 
 .card-empty {

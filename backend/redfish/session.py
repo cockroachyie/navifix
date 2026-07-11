@@ -102,6 +102,7 @@ class RedfishSession:
                     auth=auth,
                     verify=self.config.REDFISH_VERIFY_TLS,
                     timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                    follow_redirects=True,
                 )
             else:
                 headers["X-Auth-Token"] = self.token
@@ -110,6 +111,7 @@ class RedfishSession:
                     headers=headers,
                     verify=self.config.REDFISH_VERIFY_TLS,
                     timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                    follow_redirects=True,
                 )
             return self._client
 
@@ -132,6 +134,7 @@ class RedfishSession:
                 headers={"X-Auth-Token": self.token},
                 verify=self.config.REDFISH_VERIFY_TLS,
                 timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                follow_redirects=True,
             ) as client:
                 client.delete(self.session_uri)
         except httpx.HTTPError as exc:
@@ -160,13 +163,29 @@ class RedfishSession:
     def _authenticate(self):
         """POST credentials to SessionService/Sessions and capture the token."""
         payload = {"UserName": self.username, "Password": self.password}
+        sessions_url = SESSION_SERVICE_PATH
         try:
             with httpx.Client(
                 base_url=self.base_url,
                 verify=self.config.REDFISH_VERIFY_TLS,
                 timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                follow_redirects=True,
             ) as client:
-                resp = client.post(SESSION_SERVICE_PATH, json=payload)
+                # Attempt to dynamically discover the Sessions URL from the ServiceRoot
+                try:
+                    root_resp = client.get("/redfish/v1/")
+                    if root_resp.status_code == 200:
+                        root_data = root_resp.json()
+                        session_service_url = root_data.get("SessionService", {}).get("@odata.id")
+                        if session_service_url:
+                            svc_resp = client.get(session_service_url)
+                            if svc_resp.status_code == 200:
+                                svc_data = svc_resp.json()
+                                sessions_url = svc_data.get("Sessions", {}).get("@odata.id", sessions_url)
+                except Exception as e:
+                    logger.debug("Failed to dynamically discover SessionService URL: %s", e)
+
+                resp = client.post(sessions_url, json=payload)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             formatted = format_httpx_exception(exc)
             raise RedfishUnreachableError(f"Cannot reach {self.base_url}: {formatted}") from exc
@@ -204,6 +223,7 @@ class RedfishSession:
                 auth=(self.username, self.password),
                 verify=self.config.REDFISH_VERIFY_TLS,
                 timeout=self.config.REDFISH_HTTP_TIMEOUT,
+                follow_redirects=True,
             ) as client:
                 resp = client.get("/redfish/v1/")
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError) as exc:

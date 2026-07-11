@@ -23,36 +23,52 @@ def collect(client, server, topology):
     seen = set()
 
     update_svc_uri = topology.get("update_service")
-    if not update_svc_uri:
-        return components, []
+    if update_svc_uri:
+        svc = client.get(update_svc_uri)
+        if svc:
+            for coll_key in ("FirmwareInventory", "SoftwareInventory"):
+                coll_link = (svc.get(coll_key) or {}).get("@odata.id")
+                if not coll_link:
+                    continue
+                for item in collection_members(client, coll_link):
+                    uri = item.get("@odata.id")
+                    if not uri or uri in seen:
+                        continue
+                    seen.add(uri)
+                    name = item.get("Name") or item.get("Id") or "Firmware Component"
+                    # Derive a human-readable location from RelatedItem links
+                    related = item.get("RelatedItem", [])
+                    location = None
+                    if related and isinstance(related, list):
+                        loc_parts = []
+                        for r in related[:2]:
+                            if isinstance(r, dict) and r.get("@odata.id"):
+                                loc_parts.append(r["@odata.id"].split("/")[-1])
+                        if loc_parts:
+                            location = ", ".join(loc_parts)
 
-    svc = client.get(update_svc_uri)
-    if not svc:
-        return components, []
+                    components.append(component(
+                        ComponentCategory.FIRMWARE, uri, name, item, location=location,
+                    ))
 
-    for coll_key in ("FirmwareInventory", "SoftwareInventory"):
-        coll_link = (svc.get(coll_key) or {}).get("@odata.id")
-        if not coll_link:
-            continue
-        for item in collection_members(client, coll_link):
-            uri = item.get("@odata.id")
-            if not uri or uri in seen:
-                continue
-            seen.add(uri)
-            name = item.get("Name") or item.get("Id") or "Firmware Component"
-            # Derive a human-readable location from RelatedItem links
-            related = item.get("RelatedItem", [])
-            location = None
-            if related and isinstance(related, list):
-                loc_parts = []
-                for r in related[:2]:
-                    if isinstance(r, dict) and r.get("@odata.id"):
-                        loc_parts.append(r["@odata.id"].split("/")[-1])
-                if loc_parts:
-                    location = ", ".join(loc_parts)
-
-            components.append(component(
-                ComponentCategory.FIRMWARE, uri, name, item, location=location,
-            ))
+    # ── HPE FirmwareInventory fallback (iLO 4/5) ─────────────────────────
+    for system_uri, links in topology.get("per_system", {}).items():
+        hpe_fw_uri = links.get("firmware_hpe")
+        if hpe_fw_uri:
+            body = client.get(hpe_fw_uri)
+            if body and body.get("Current"):
+                for category, items in body["Current"].items():
+                    if isinstance(items, list):
+                        for idx, item in enumerate(items):
+                            if not item or not isinstance(item, dict):
+                                continue
+                            name = item.get("Name", "Firmware Component")
+                            loc = item.get("Location")
+                            uri = f"{hpe_fw_uri}#{category}/{idx}"
+                            if uri not in seen:
+                                seen.add(uri)
+                                components.append(component(
+                                    ComponentCategory.FIRMWARE, uri, name, item, location=loc,
+                                ))
 
     return components, []

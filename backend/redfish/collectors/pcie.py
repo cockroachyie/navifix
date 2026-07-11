@@ -61,6 +61,11 @@ def collect(client, server, topology):
             for dev in collection_members(client, pcie_uri):
                 _add_device(dev)
 
+        hpe_pcie_uri = links.get("pcie_devices_hpe")
+        if hpe_pcie_uri:
+            for dev in collection_members(client, hpe_pcie_uri):
+                _add_device(dev)
+
         # Direct PCIeFunction links (some systems expose them directly)
         func_uri = links.get("pcie_functions")
         if func_uri:

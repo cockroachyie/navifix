@@ -124,5 +124,29 @@ def collect(client, server, topology):
             if charge is not None:
                 readings.append(reading("battery_charge_percent", b.get("Name"), charge, "%"))
 
+    # ── HPE SmartStorage Array Controller Batteries (iLO 4/5) ──────────────
+    from .common import collection_members
+    for system_uri, links in topology.get("per_system", {}).items():
+        hpe_uri = links.get("storage_hpe")
+        if hpe_uri:
+            smart_storage = client.get(hpe_uri)
+            if smart_storage:
+                controllers_link = (smart_storage.get("Links") or {}).get("ArrayControllers", {}).get("@odata.id")
+                if controllers_link:
+                    for ctrl in collection_members(client, controllers_link):
+                        status = ctrl.get("BackupPowerSourceStatus")
+                        if status and status != "NotPresent":
+                            uri = f"{ctrl.get('@odata.id', hpe_uri)}#battery"
+                            if uri not in seen_uris:
+                                seen_uris.add(uri)
+                                name = f"{ctrl.get('Model', 'Smart Array Controller')} Backup Battery"
+                                components.append(component(
+                                    ComponentCategory.BATTERY, uri, name, ctrl,
+                                    location=ctrl.get("Location")
+                                ))
+                                readings.append(reading(
+                                    "battery_health", name, 100 if status in ("Present", "Ready", "OK") else 0, "%"
+                                ))
+
     readings = [r for r in readings if r]
     return components, readings
