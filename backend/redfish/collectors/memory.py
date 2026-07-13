@@ -11,7 +11,7 @@ ErrorCorrection, MemoryDeviceType, FirmwareRevision, MemoryLocation,
 Status, and any OEM temperature/error-count extensions). Empty DIMM slots
 (State=Absent) are still surfaced so the UI can show the full slot map.
 """
-from .common import component, reading, collection_members
+from .common import component, reading, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -21,7 +21,9 @@ def collect(client, server, topology):
     for system_uri, links in topology.get("per_system", {}).items():
         memory_uri = links.get("memory")
         if not memory_uri:
+            components.append(unsupported_marker(ComponentCategory.MEMORY))
             continue
+        dimm_count = 0
         for dimm in collection_members(client, memory_uri):
             odata_id = dimm.get("@odata.id")
             location = None
@@ -31,6 +33,7 @@ def collect(client, server, topology):
             components.append(component(
                 ComponentCategory.MEMORY, odata_id, dimm.get("Name", "DIMM"), dimm, location=location,
             ))
+            dimm_count += 1
 
             temp = (dimm.get("Oem") or {}).get("Temperature")
             if temp is not None:
@@ -46,6 +49,11 @@ def collect(client, server, topology):
                     correctable = metrics_body.get("HealthData", {}).get("CorrectableECCErrorCount")
                     if correctable is not None:
                         readings.append(reading("memory_errors", dimm.get("Name"), correctable, "count"))
+
+        if dimm_count == 0:
+            # Memory collection exists but returned no accessible members.
+            # Show "Not Supported" rather than a misleading 0 count.
+            components.append(unsupported_marker(ComponentCategory.MEMORY))
 
     readings = [r for r in readings if r]
     return components, readings

@@ -1,8 +1,8 @@
-﻿"""
+"""
 redfish/collectors/battery.py
 """
 import logging
-from .common import component, reading
+from .common import component, reading, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 logger = logging.getLogger(__name__)
@@ -124,29 +124,33 @@ def collect(client, server, topology):
             if charge is not None:
                 readings.append(reading("battery_charge_percent", b.get("Name"), charge, "%"))
 
-    # ── HPE SmartStorage Array Controller Batteries (iLO 4/5) ──────────────
-    from .common import collection_members
+    # ── Storage Controller Batteries ──────────────────────────────────────
     for system_uri, links in topology.get("per_system", {}).items():
-        hpe_uri = links.get("storage_hpe")
-        if hpe_uri:
-            smart_storage = client.get(hpe_uri)
-            if smart_storage:
-                controllers_link = (smart_storage.get("Links") or {}).get("ArrayControllers", {}).get("@odata.id")
-                if controllers_link:
-                    for ctrl in collection_members(client, controllers_link):
-                        status = ctrl.get("BackupPowerSourceStatus")
-                        if status and status != "NotPresent":
-                            uri = f"{ctrl.get('@odata.id', hpe_uri)}#battery"
-                            if uri not in seen_uris:
-                                seen_uris.add(uri)
-                                name = f"{ctrl.get('Model', 'Smart Array Controller')} Backup Battery"
-                                components.append(component(
-                                    ComponentCategory.BATTERY, uri, name, ctrl,
-                                    location=ctrl.get("Location")
-                                ))
-                                readings.append(reading(
-                                    "battery_health", name, 100 if status in ("Present", "Ready", "OK") else 0, "%"
-                                ))
+        storage_uri = links.get("storage")
+        if storage_uri:
+            for storage_sys in collection_members(client, storage_uri):
+                for ctrl in storage_sys.get("StorageControllers", []):
+                    status = ctrl.get("BackupPowerSourceStatus")
+                    if status and status != "NotPresent":
+                        uri = ctrl.get('@odata.id') or f"{storage_sys.get('@odata.id')}#controller#{ctrl.get('MemberId', '')}"
+                        bat_uri = f"{uri}#battery"
+                        if bat_uri not in seen_uris:
+                            seen_uris.add(bat_uri)
+                            name = f"{ctrl.get('Model', ctrl.get('Name', 'Storage Controller'))} Backup Battery"
+                            components.append(component(
+                                ComponentCategory.BATTERY, bat_uri, name, ctrl,
+                                location=ctrl.get("Location")
+                            ))
+                            readings.append(reading(
+                                "battery_health", name, 100 if status in ("Present", "Ready", "OK") else 0, "%"
+                            ))
+
+    # If no battery components were found from any path, mark as not supported
+    # so the UI shows "Not Supported" instead of a misleading "0" count.
+    real_components = [c for c in components if c.get("odata_id") != "meta:unsupported"]
+    if not real_components:
+        components = [unsupported_marker(ComponentCategory.BATTERY)]
 
     readings = [r for r in readings if r]
     return components, readings
+

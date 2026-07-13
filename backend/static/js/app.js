@@ -158,6 +158,77 @@ const $ = (sel) => document.querySelector(sel);
 const $all = (sel) => Array.from(document.querySelectorAll(sel));
 
 // ---------------------------------------------------------------------
+// Edit server modal
+// ---------------------------------------------------------------------
+let editServerId = null;
+
+function openEditServerModal(server) {
+  editServerId = server.id;
+  $("#e_display_name").value = server.display_name || server.hostname;
+  $("#e_username").value = server.username || "";
+  $("#e_password").value = "";
+  $("#e_interval").value = server.polling_interval_seconds || 30;
+  $("#editServerError").style.display = "none";
+  $("#editServerModal").classList.add("open");
+}
+
+function wireEditServerModal() {
+  const modal = $("#editServerModal");
+  $("#cancelEditServer").addEventListener("click", () => modal.classList.remove("open"));
+  
+  $("#submitEditServer").addEventListener("click", async () => {
+    const errorEl = $("#editServerError");
+    errorEl.style.display = "none";
+    const payload = {
+      display_name: $("#e_display_name").value.trim(),
+      username: $("#e_username").value.trim(),
+      polling_interval_seconds: parseInt($("#e_interval").value, 10) || 30,
+    };
+    const pwd = $("#e_password").value;
+    if (pwd) payload.password = pwd;
+    
+    try {
+      await api(`/api/servers/${editServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
+      modal.classList.remove("open");
+      await loadServers();
+      if (state.selectedServerId === editServerId) {
+        await api(`/api/servers/${editServerId}/poll-now`, { method: "POST" });
+        toast("Credentials updated - checking connection...");
+      } else {
+        toast("Server updated");
+      }
+    } catch (e) {
+      errorEl.textContent = e.message;
+      errorEl.style.display = "block";
+    }
+  });
+
+  $("#deleteServerBtn").addEventListener("click", async () => {
+    if (!confirm("Are you sure you want to remove this server?")) return;
+    try {
+      await api(`/api/servers/${editServerId}`, { method: "DELETE" });
+      modal.classList.remove("open");
+      if (state.selectedServerId === editServerId) {
+        state.selectedServerId = null;
+        $("#main").innerHTML = `
+          <div class="no-server-selected">
+            <i class="fa-solid fa-server" style="font-size: 40px; color: var(--accent); opacity:.4;"></i>
+            <div style="margin-top:12px; font-size:15px; font-weight:600;">Select a server</div>
+            <div style="font-size:12px; color:var(--text-faint);">Choose a server from the sidebar to view its hardware status</div>
+          </div>
+        `;
+      }
+      await loadServers();
+      toast("Server removed");
+    } catch (e) {
+      const errorEl = $("#editServerError");
+      errorEl.textContent = e.message;
+      errorEl.style.display = "block";
+    }
+  });
+}
+
+// ---------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------
 async function api(path, opts = {}) {
@@ -298,15 +369,21 @@ function renderHeader(server) {
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
       <div class="stat"><div class="label">Service Tag</div><div class="value">${escapeHtml(server.service_tag || "-")}</div></div>
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
+      <div class="stat"><button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button></div>
       <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>
     </div>
   `;
   if (errorDetail && server.connection_status !== 'connected') {
     const errBanner = document.createElement('div');
     errBanner.className = 'header-error-banner';
-    errBanner.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> ${escapeHtml(errorDetail)}`;
+    errBanner.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> ${escapeHtml(errorDetail)} <button class="btn-secondary" id="errUpdateCredsBtn" style="margin-left:10px;">Update Credentials</button>`;
     header.appendChild(errBanner);
+    $("#errUpdateCredsBtn").addEventListener("click", () => {
+      openEditServerModal(server);
+      setTimeout(() => $("#e_password").focus(), 100);
+    });
   }
+  $("#editServerBtn").addEventListener("click", () => openEditServerModal(server));
   $("#pollNowBtn").addEventListener("click", async () => {
     await api(`/api/servers/${state.selectedServerId}/poll-now`, { method: "POST" });
     toast("Poll queued");
@@ -347,13 +424,18 @@ function buildCategoryCard(category, components) {
   card.className = "card" + (isOpen ? " open" : "");
   card.dataset.category = category;
 
-  const worst = worstHealth(components);
+  // Filter out unsupported markers before computing display count
+  const realComps = components.filter(c => c.odata_id !== "meta:unsupported");
+  const isUnsupported = components.length > 0 && realComps.length === 0;
+  const countLabel = isUnsupported ? "–" : String(realComps.length);
+
+  const worst = worstHealth(realComps);
   card.innerHTML = `
     <div class="card-header">
       <i class="fa-solid ${meta.icon} icon"></i>
       <span class="title">${meta.label}</span>
       ${worst ? `<span class="dot" style="width:8px;height:8px;border-radius:50%;background:${healthDotColor(worst)}"></span>` : ""}
-      <span class="count">${components.length}</span>
+      <span class="count">${countLabel}</span>
       <i class="fa-solid fa-chevron-right chevron"></i>
     </div>
     <div class="card-body"></div>
@@ -383,7 +465,17 @@ function renderCategoryBody(body, category, components) {
     body.appendChild(buildHistorySection(category));
   }
 
-  if (components.length === 0) {
+  // Check for unsupported-marker components
+  const realComps = components.filter(c => c.odata_id !== "meta:unsupported");
+  if (components.length > 0 && realComps.length === 0) {
+    const msg = document.createElement("div");
+    msg.className = "card-empty";
+    msg.textContent = "Not supported or not available on this server.";
+    body.appendChild(msg);
+    return;
+  }
+
+  if (realComps.length === 0) {
     const empty = document.createElement("div");
     empty.className = "card-empty";
     empty.textContent = "No data reported by Redfish for this category on this server.";
@@ -391,7 +483,7 @@ function renderCategoryBody(body, category, components) {
     return;
   }
 
-  for (const c of components) {
+  for (const c of realComps) {
     body.appendChild(buildComponentItem(c));
   }
 }
@@ -454,9 +546,6 @@ const DEFAULT_SKIP_TOP_LEVEL_KEYS = new Set([
 function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEVEL_KEYS) {
   const grid = document.createElement("div");
   grid.className = "prop-grid";
-  // NOTE: the local `const skipTopLevelKeys = new Set([...])` line that used
-  // to be here is now the function parameter above — delete the old local
-  // declaration, everything else in this function is unchanged.
 
   function walk(value, path) {
     if (value === null || value === undefined) {
@@ -903,6 +992,7 @@ function wireDrawer() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   wireAddServerModal();
+  wireEditServerModal();
   wireDrawer();
   wireSocket();
   $("#serverSearch").addEventListener("input", renderServerList);

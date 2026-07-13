@@ -89,6 +89,7 @@ CHASSIS_LINK_KEYS = {
     "ThermalSubsystem": "thermal_subsystem",
     "EnvironmentMetrics": "environment_metrics",
     "Batteries": "batteries",
+    "Sensors": "sensors",
 }
 
 
@@ -148,7 +149,7 @@ def discover_topology(client) -> dict:
             continue
         links = {}
         for key, out_key in SYSTEM_LINK_KEYS.items():
-            uri = _odata_id(body.get(key))
+            uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
             if uri:
                 links[out_key] = uri
         # Storage/SimpleStorage/EthernetInterfaces etc. can also live under
@@ -156,15 +157,6 @@ def discover_topology(client) -> dict:
         # but we do check the standard Links block too.
         oem = body.get("Oem", {})
         links["oem"] = oem if oem else None
-
-        hp_links = oem.get("Hp", {}).get("Links", {})
-        if hp_links:
-            if "SmartStorage" in hp_links:
-                links["storage_hpe"] = _odata_id(hp_links["SmartStorage"])
-            if "PCIDevices" in hp_links:
-                links["pcie_devices_hpe"] = _odata_id(hp_links["PCIDevices"])
-            if "FirmwareInventory" in hp_links:
-                links["firmware_hpe"] = _odata_id(hp_links["FirmwareInventory"])
 
         topology["per_system"][system_uri] = links
 
@@ -174,7 +166,7 @@ def discover_topology(client) -> dict:
             continue
         links = {}
         for key, out_key in CHASSIS_LINK_KEYS.items():
-            uri = _odata_id(body.get(key))
+            uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
             if uri:
                 links[out_key] = uri
         topology["per_chassis"][chassis_uri_item] = links
@@ -185,7 +177,7 @@ def discover_topology(client) -> dict:
             continue
         links = {}
         for key, out_key in MANAGER_LINK_KEYS.items():
-            uri = _odata_id(body.get(key))
+            uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
             if uri:
                 links[out_key] = uri
         topology["per_manager"][manager_uri] = links

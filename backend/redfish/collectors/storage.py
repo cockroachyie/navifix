@@ -95,9 +95,6 @@ def collect(client, server, topology):
                         dev.get("Name") or "Device", dev,
                     ))
 
-<<<<<<< HEAD
-        # ── Chassis-level drives ────────────────────────────────────────
-=======
         # ── HPE SmartStorage fallback (iLO 4/5) ─────────────────────────
         hpe_uri = links.get("storage_hpe")
         if hpe_uri:
@@ -134,8 +131,7 @@ def collect(client, server, topology):
                                         vol.get("Name") or vol.get("LogicalDriveName") or "Logical Drive", vol,
                                     ))
 
-        # ── Chassis-level drives (some BMCs link drives at chassis level) ─
->>>>>>> 22e9b12 (hp-ilo)
+        # ── Chassis-level drives ────────────────────────────────────────
         for chassis_uri, chassis_links in topology.get("per_chassis", {}).items():
             drives_uri = chassis_links.get("drives")
             if drives_uri:

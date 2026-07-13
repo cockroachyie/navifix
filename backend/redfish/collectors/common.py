@@ -27,6 +27,12 @@ def component(category, odata_id, name, raw_json, location=None, health=None, st
     }
 
 
+def unsupported_marker(category):
+    """Return a dummy component representing an unsupported collection.
+    The UI will detect 'meta:unsupported' and hide the '0' count."""
+    return component(category, "meta:unsupported", "Not Supported", {})
+
+
 def reading(metric, source_name, value, unit=None):
     if value is None:
         return None
@@ -43,11 +49,20 @@ def collection_members(client, collection_uri):
     if not coll:
         return []
     members = []
-    for m in coll.get("Members", []):
-        uri = m.get("@odata.id")
-        if not uri:
-            continue
-        body = client.get(uri)
-        if body:
-            members.append(body)
+    
+    while coll:
+        for m in coll.get("Members", []):
+            uri = m.get("@odata.id")
+            if not uri:
+                continue
+            body = client.get(uri)
+            if body:
+                members.append(body)
+                
+        next_link = coll.get("Members@odata.nextLink")
+        if next_link:
+            coll = client.get(next_link)
+        else:
+            break
+            
     return members

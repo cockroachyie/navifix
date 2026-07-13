@@ -12,7 +12,7 @@ Captures every voltage rail: ReadingVolts, UpperThresholdCritical,
 UpperThresholdFatal, UpperThresholdNonCritical, LowerThresholdCritical,
 LowerThresholdFatal, LowerThresholdNonCritical, PhysicalContext, Status.
 """
-from .common import component, reading
+from .common import component, reading, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -22,10 +22,12 @@ def collect(client, server, topology):
     for chassis_uri, links in topology.get("per_chassis", {}).items():
 
         voltage_items = []
+        supported = False
 
         # ── Voltages embedded in Thermal resource ───────────────────────
         thermal_uri = links.get("thermal")
         if thermal_uri:
+            supported = True
             body = client.get(thermal_uri)
             if body:
                 voltage_items.extend(body.get("Voltages", []))
@@ -33,6 +35,7 @@ def collect(client, server, topology):
         # ── Voltages embedded in Power resource ─────────────────────────
         power_uri = links.get("power")
         if power_uri:
+            supported = True
             body = client.get(power_uri)
             if body:
                 voltage_items.extend(body.get("Voltages", []))
@@ -40,10 +43,32 @@ def collect(client, server, topology):
         # ── 2021.x EnvironmentMetrics ───────────────────────────────────
         env_uri = links.get("environment_metrics")
         if env_uri:
+            supported = True
             env = client.get(env_uri)
             if env:
                 for v in (env.get("Voltages") or env.get("PowerVoltages") or []):
                     voltage_items.append(v)
+                    
+        # ── Voltages in Sensors collection ──────────────────────────────
+        sensors_uri = links.get("sensors")
+        if sensors_uri:
+            supported = True
+            for sensor in collection_members(client, sensors_uri):
+                if sensor.get("ReadingType") == "Voltage":
+                    volts = sensor.get("Reading")
+                    if volts is not None:
+                        sensor["ReadingVolts"] = volts
+                    voltage_items.append(sensor)
+                    
+        if not supported:
+            components.append(unsupported_marker(ComponentCategory.VOLTAGE_SENSOR))
+            continue
+
+        if not voltage_items:
+            # Resources exist but none report voltages — mark as not available
+            # rather than returning an empty list that the UI shows as 0.
+            components.append(unsupported_marker(ComponentCategory.VOLTAGE_SENSOR))
+            continue
 
         for v in voltage_items:
             odata_id = (

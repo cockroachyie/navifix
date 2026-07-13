@@ -61,6 +61,17 @@ class RedfishClient:
                 if resp.status_code >= 500:
                     raise RedfishUnreachableError(f"{resp.status_code} from {path}")
 
+                # Any other 4xx (403 Forbidden, 405 Method Not Allowed, etc.)
+                # means "resource not accessible to this account" — return None
+                # rather than raising, so collectors can silently skip optional
+                # resources without crashing the entire category.
+                if resp.status_code >= 400:
+                    logger.debug(
+                        "HTTP %s from %s%s - resource not accessible, skipping",
+                        resp.status_code, self.session.base_url, path,
+                    )
+                    return None
+
                 resp.raise_for_status()
                 if not resp.content:
                     return {}

@@ -347,13 +347,16 @@ function buildCategoryCard(category, components) {
   card.className = "card" + (isOpen ? " open" : "");
   card.dataset.category = category;
 
+  const isUnsupported = components.length === 1 && components[0].odata_id === "meta:unsupported";
+  const displayCount = isUnsupported ? "Not Supported" : components.length;
   const worst = worstHealth(components);
+  
   card.innerHTML = `
     <div class="card-header">
       <i class="fa-solid ${meta.icon} icon"></i>
       <span class="title">${meta.label}</span>
       ${worst ? `<span class="dot" style="width:8px;height:8px;border-radius:50%;background:${healthDotColor(worst)}"></span>` : ""}
-      <span class="count">${components.length}</span>
+      <span class="count">${displayCount}</span>
       <i class="fa-solid fa-chevron-right chevron"></i>
     </div>
     <div class="card-body"></div>
@@ -383,10 +386,14 @@ function renderCategoryBody(body, category, components) {
     body.appendChild(buildHistorySection(category));
   }
 
-  if (components.length === 0) {
+  const isUnsupported = components.length === 1 && components[0].odata_id === "meta:unsupported";
+
+  if (components.length === 0 || isUnsupported) {
     const empty = document.createElement("div");
     empty.className = "card-empty";
-    empty.textContent = "No data reported by Redfish for this category on this server.";
+    empty.textContent = isUnsupported 
+        ? "This category is not supported by the BMC on this server." 
+        : "No data reported by Redfish for this category on this server.";
     body.appendChild(empty);
     return;
   }
