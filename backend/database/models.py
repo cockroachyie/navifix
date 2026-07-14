@@ -95,6 +95,13 @@ class AlertSeverity(str, enum.Enum):
     CRITICAL = "critical"
 
 
+class OperationStatus(str, enum.Enum):
+    QUEUED    = "queued"
+    RUNNING   = "running"
+    COMPLETED = "completed"
+    FAILED    = "failed"
+
+
 class ComponentCategory(str, enum.Enum):
     BATTERY           = "battery"
     CHASSIS           = "chassis"
@@ -172,6 +179,7 @@ class Server(db.Model):
     log_entries     = relationship("LogEntry",      back_populates="server", cascade="all, delete-orphan")
     alerts          = relationship("Alert",         back_populates="server", cascade="all, delete-orphan")
     redfish_sessions= relationship("RedfishSessionRecord", back_populates="server", cascade="all, delete-orphan")
+    operations      = relationship("Operation",     back_populates="server", cascade="all, delete-orphan")
 
     def to_summary_dict(self):
         """Minimal dict pushed to every browser via WebSocket (fleet room).
@@ -337,6 +345,52 @@ class LogEntry(db.Model):
             "message_id": self.message_id,
             "sensor_type": self.sensor_type,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class Operation(db.Model):
+    """A user-requested, asynchronous vendor operation and its result."""
+
+    __tablename__ = "operations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    server_id = Column(
+        _UUID(as_uuid=True), ForeignKey("servers.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    operation_type = Column(String(64), nullable=False, index=True)
+    vendor = Column(String(128))
+    status = Column(
+        Enum(OperationStatus, name="operation_status_enum"),
+        nullable=False, default=OperationStatus.QUEUED, index=True,
+    )
+    progress_percent = Column(Integer)
+    status_message = Column(Text)
+    error_message = Column(Text)
+    result_path = Column(Text)
+    result_filename = Column(String(512))
+    result_content_type = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+
+    server = relationship("Server", back_populates="operations")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "server_id": str(self.server_id),
+            "operation_type": self.operation_type,
+            "vendor": self.vendor,
+            "status": self.status.value if self.status else None,
+            "progress_percent": self.progress_percent,
+            "status_message": self.status_message,
+            "error_message": self.error_message,
+            "result_filename": self.result_filename,
+            "result_content_type": self.result_content_type,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
         }
 
 

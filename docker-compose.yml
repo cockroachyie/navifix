@@ -54,6 +54,9 @@ services:
     # Mount source so code changes take effect without rebuild
     volumes:
       - ./backend:/app
+      - type: bind
+        source: 'C:\TSRShare'
+        target: /mnt/tsr
     working_dir: /app
 
 volumes:

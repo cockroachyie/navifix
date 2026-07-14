@@ -357,6 +357,7 @@ function renderHeader(server) {
   const connLabel = formatConnectionStatus(server.connection_status);
   const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
   const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
+  const supportsDiagnostics = (server.vendor || "").toLowerCase().includes("dell");
   header.innerHTML = `
     <div>
       <h1>${escapeHtml(server.display_name || server.hostname)}</h1>
@@ -371,6 +372,7 @@ function renderHeader(server) {
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
       <div class="stat"><button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button></div>
       <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>
+      ${supportsDiagnostics ? '<div class="stat"><button class="btn-secondary" id="supportBundleBtn"><i class="fa-solid fa-file-zipper"></i> Support bundle</button></div>' : ''}
     </div>
   `;
   if (errorDetail && server.connection_status !== 'connected') {
@@ -388,6 +390,60 @@ function renderHeader(server) {
     await api(`/api/servers/${state.selectedServerId}/poll-now`, { method: "POST" });
     toast("Poll queued");
   });
+  if (supportsDiagnostics) {
+    $("#supportBundleBtn").addEventListener("click", startSupportBundle);
+  }
+}
+
+async function startSupportBundle() {
+  const button = $("#supportBundleBtn");
+  if (!button || !state.selectedServerId) return;
+  button.disabled = true;
+  button.textContent = "Starting support bundle…";
+  try {
+    const operation = await api(
+      `/api/servers/${state.selectedServerId}/diagnostics/support-bundle`,
+      { method: "POST" },
+    );
+    monitorSupportBundle(operation.id, button);
+  } catch (e) {
+    button.disabled = false;
+    button.innerHTML = '<i class="fa-solid fa-file-zipper"></i> Support bundle';
+    toast(`Support bundle failed to start: ${e.message}`);
+  }
+}
+
+async function monitorSupportBundle(operationId, button) {
+  try {
+    const operation = await api(`/api/operations/${operationId}`);
+    if (operation.status === "completed") {
+      const downloadButton = button.cloneNode(true);
+      downloadButton.disabled = false;
+      downloadButton.innerHTML = '<i class="fa-solid fa-download"></i> Download support bundle';
+      button.replaceWith(downloadButton);
+      downloadButton.addEventListener("click", () => {
+        window.location.href = `/api/operations/${operationId}/download`;
+      });
+      toast("Support bundle is ready to download");
+      return;
+    }
+    if (operation.status === "failed") {
+      button.disabled = false;
+      button.innerHTML = '<i class="fa-solid fa-file-zipper"></i> Support bundle';
+      toast(`Support bundle failed: ${operation.error_message || "Unknown error"}`);
+      return;
+    }
+
+    const progress = operation.progress_percent;
+    button.textContent = progress === null || progress === undefined
+      ? "Preparing support bundle…"
+      : `Preparing support bundle… ${progress}%`;
+    setTimeout(() => monitorSupportBundle(operationId, button), 2000);
+  } catch (e) {
+    button.disabled = false;
+    button.innerHTML = '<i class="fa-solid fa-file-zipper"></i> Support bundle';
+    toast(`Unable to check support bundle: ${e.message}`);
+  }
 }
 
 function renderCards(componentsByCategory) {

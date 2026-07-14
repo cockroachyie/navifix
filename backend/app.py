@@ -25,6 +25,9 @@ POST /api/servers/<id>/poll-now            immediate poll
 GET  /api/servers/<id>/components          hardware state grouped by category
 GET  /api/servers/<id>/history/<metric>    time-series (range=1h/24h/7d/30d)
 GET  /api/servers/<id>/logs                event logs
+POST /api/servers/<id>/diagnostics/support-bundle
+GET  /api/operations/<id>                  operation status
+GET  /api/operations/<id>/download         completed operation result
 GET  /api/alerts                           alert list
 POST /api/alerts/<id>/acknowledge
 POST /api/alerts/<id>/resolve
@@ -41,7 +44,7 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from flask import Flask, jsonify, request, abort, render_template
+from flask import Flask, jsonify, request, abort, render_template, send_file
 from flask_socketio import SocketIO
 
 from config import build_app_config
@@ -54,6 +57,9 @@ from auth.credentials import get_cipher
 from websocket import events as ws_events
 from redfish.events import parse_event_payload
 from alerts import engine as alert_engine
+from diagnostics.runner import run_diagnostics_operation
+from operations import executor as operation_executor
+from operations import service as operation_service
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +130,7 @@ def create_app() -> tuple[Flask, SocketIO]:
     # Create DB tables
     with app.app_context():
         db.create_all()
+        operation_service.reconcile_orphaned_operations()
 
     return app, socketio
 
@@ -201,6 +208,46 @@ def _register_routes(app: Flask, socketio: SocketIO):
         _get_server_or_404(server_id)
         _trigger_poll(server_id)
         return jsonify({"status": "queued"})
+
+    # ── Diagnostics operations ──────────────────────────────────────────
+    @app.route("/api/servers/<server_id>/diagnostics/support-bundle", methods=["POST"])
+    def start_support_bundle(server_id):
+        server = _get_server_or_404(server_id)
+        try:
+            operation = operation_service.create_operation(
+                server.id, "support_bundle", server.vendor,
+            )
+        except operation_service.OperationConflict as exc:
+            return jsonify({
+                "error": str(exc),
+                "operation": exc.existing_operation.to_dict(),
+            }), 409
+
+        operation_executor.submit(
+            run_diagnostics_operation, app, operation.id, server.id,
+        )
+        return jsonify(operation.to_dict()), 202
+
+    @app.route("/api/operations/<int:operation_id>", methods=["GET"])
+    def get_operation(operation_id):
+        operation = operation_service.get_operation(operation_id)
+        if not operation:
+            abort(404, description=f"Operation {operation_id} not found")
+        return jsonify(operation.to_dict())
+
+    @app.route("/api/operations/<int:operation_id>/download", methods=["GET"])
+    def download_operation_result(operation_id):
+        operation = operation_service.get_operation(operation_id)
+        if not operation:
+            abort(404, description=f"Operation {operation_id} not found")
+        if not operation.result_path or not os.path.isfile(operation.result_path):
+            abort(404, description="Operation result is not available")
+        return send_file(
+            operation.result_path,
+            as_attachment=True,
+            download_name=operation.result_filename,
+            mimetype=operation.result_content_type,
+        )
 
     # ── Components ────────────────────────────────────────────────────────
     @app.route("/api/servers/<server_id>/components", methods=["GET"])
