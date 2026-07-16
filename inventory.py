@@ -30,11 +30,18 @@ def _guess_vendor(service_root: dict, system_body: dict | None) -> str | None:
         service_root.get("Oem", {}).get("Supermicro", {}) and "Supermicro",
     ]
     if system_body:
-        candidates.append(system_body.get("Manufacturer"))
-    for c in candidates:
-        if c:
-            return c
-    return None
+        server_row.model = system_body.get("Model")
+        server_row.serial_number = system_body.get("SerialNumber")
+        server_row.asset_tag = system_body.get("AssetTag")
+        # SKU means different things per vendor: Dell puts the Service Tag
+        # there, but HPE (and possibly others) put the Product ID/SKU
+        # instead - which is not a unique-per-unit identifier and must
+        # never be shown as if it were one. Only trust SKU as a service
+        # tag for Dell; every other vendor's unique identifier is
+        # SerialNumber, already captured above.
+        is_dell = bool(server_row.vendor) and "dell" in server_row.vendor.lower()
+        server_row.service_tag = system_body.get("SKU") if is_dell else None
+        power_state = system_body.get("PowerState")
 
 
 def refresh_inventory(client, server_row, db_session):

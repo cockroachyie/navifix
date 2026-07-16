@@ -358,6 +358,11 @@ function renderHeader(server) {
   const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
   const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
   const supportsDiagnostics = (server.vendor || "").toLowerCase().includes("dell");
+  const isDell = (server.vendor || "").toLowerCase().includes("dell");
+  const identityLabel = isDell ? "Service Tag" : "Serial Number";
+  const identityValue = isDell
+    ? (server.service_tag || "—")
+    : (server.serial_number || "—");
   header.innerHTML = `
     <div>
       <h1>${escapeHtml(server.display_name || server.hostname)}</h1>
@@ -368,7 +373,10 @@ function renderHeader(server) {
     <span class="pill ${connPillClass}" ${errorDetail ? `title="${escapeHtml(errorDetail)}"` : ''}><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${connLabel}</span>
     <div class="header-stats">
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
-      <div class="stat"><div class="label">Service Tag</div><div class="value">${escapeHtml(server.service_tag || "-")}</div></div>
+      <div class="stat">
+        <div class="label">${identityLabel}</div>
+        <div class="value">${escapeHtml(identityValue)}</div>
+      </div>
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
       <div class="stat"><button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button></div>
       <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>
