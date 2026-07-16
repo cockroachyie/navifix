@@ -51,7 +51,7 @@ from config import build_app_config
 from database import db
 from database.models import (
     Server, Component, SensorReading, LogEntry, Alert,
-    ConnectionStatus,
+    ConnectionStatus, Agent, Site
 )
 from auth.credentials import get_cipher
 from websocket import events as ws_events
@@ -154,9 +154,37 @@ def _register_routes(app: Flask, socketio: SocketIO):
     @app.route("/api/servers", methods=["POST"])
     def add_server():
         data = request.get_json(force=True) or {}
-        for field in ("hostname", "ip_address", "username", "password"):
+        for field in ("hostname", "ip_address"):
             if not data.get(field):
                 return jsonify({"error": f"'{field}' is required"}), 400
+        
+        # Credentials are required ONLY if not managed by an agent
+        agent_id = data.get("agent_id")
+        if not agent_id:
+            agent_id = None
+            for field in ("username", "password"):
+                if not data.get(field):
+                    return jsonify({"error": f"'{field}' is required for local polling"}), 400
+        else:
+            try:
+                import uuid
+                uuid.UUID(agent_id)
+            except ValueError:
+                return jsonify({"error": "Agent ID must be a valid UUID format"}), 400
+            if not db.session.get(Agent, agent_id):
+                return jsonify({"error": "Agent ID does not exist in the database"}), 400
+
+        site_id = data.get("site_id")
+        if not site_id:
+            site_id = None
+        else:
+            try:
+                import uuid
+                uuid.UUID(site_id)
+            except ValueError:
+                return jsonify({"error": "Site ID must be a valid UUID format"}), 400
+            if not db.session.get(Site, site_id):
+                return jsonify({"error": "Site ID does not exist in the database"}), 400
 
         if Server.query.filter_by(ip_address=data["ip_address"]).first():
             return jsonify({"error": "A server with this IP address already exists"}), 409
@@ -166,10 +194,12 @@ def _register_routes(app: Flask, socketio: SocketIO):
             hostname=data["hostname"],
             display_name=data.get("display_name") or data["hostname"],
             ip_address=data["ip_address"],
-            username=data["username"],
-            password_encrypted=cipher.encrypt(data["password"]),
+            username=data.get("username"),
+            password_encrypted=cipher.encrypt(data["password"]) if data.get("password") else None,
             polling_interval_seconds=int(data.get("polling_interval_seconds") or 30),
             enabled=True,
+            site_id=site_id,
+            agent_id=agent_id
         )
         db.session.add(server)
         db.session.commit()
@@ -189,7 +219,33 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if "display_name" in data:          server.display_name = data["display_name"]
         if "ip_address" in data:            server.ip_address = data["ip_address"]
         if "username" in data:              server.username = data["username"]
-        if data.get("password"):            server.password_encrypted = cipher.encrypt(data["password"])
+        if "password" in data:              server.password_encrypted = cipher.encrypt(data["password"]) if data["password"] else None
+        if "site_id" in data:
+            if data["site_id"]:
+                try:
+                    import uuid
+                    uuid.UUID(data["site_id"])
+                    if not db.session.get(Site, data["site_id"]):
+                        return jsonify({"error": "Site ID does not exist in the database"}), 400
+                    server.site_id = data["site_id"]
+                except ValueError:
+                    return jsonify({"error": "Site ID must be a valid UUID format"}), 400
+            else:
+                server.site_id = None
+                
+        if "agent_id" in data:
+            if data["agent_id"]:
+                try:
+                    import uuid
+                    uuid.UUID(data["agent_id"])
+                    if not db.session.get(Agent, data["agent_id"]):
+                        return jsonify({"error": "Agent ID does not exist in the database"}), 400
+                    server.agent_id = data["agent_id"]
+                except ValueError:
+                    return jsonify({"error": "Agent ID must be a valid UUID format"}), 400
+            else:
+                server.agent_id = None
+                
         if "polling_interval_seconds" in data:
             server.polling_interval_seconds = int(data["polling_interval_seconds"])
         if "enabled" in data:               server.enabled = bool(data["enabled"])
@@ -346,6 +402,78 @@ def _register_routes(app: Flask, socketio: SocketIO):
     @app.route("/api/health", methods=["GET"])
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
+
+    # ── Agent Ingestion ───────────────────────────────────────────────────
+    @app.route("/api/ingest/telemetry", methods=["POST"])
+    def ingest_telemetry():
+        agent_token = request.headers.get("X-Agent-Token")
+        if not agent_token:
+            return jsonify({"error": "Missing X-Agent-Token"}), 401
+        
+        from database.models import Agent, ConnectionStatus
+        import hashlib
+        token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
+        agent = Agent.query.filter_by(api_key_hash=token_hash).first()
+        if not agent:
+            return jsonify({"error": "Invalid X-Agent-Token"}), 403
+
+        data = request.get_json(force=True) or {}
+        server_id = data.get("server_id")
+        if not server_id:
+            return jsonify({"error": "server_id is required"}), 400
+            
+        server = _get_server_or_404(server_id)
+        if str(server.agent_id) != str(agent.id):
+            return jsonify({"error": "Server not assigned to this agent"}), 403
+
+        # Update agent last seen
+        agent.last_seen_at = datetime.utcnow()
+        agent.health_status = "OK"
+        db.session.add(agent)
+
+        components = data.get("components", {})
+        readings = data.get("readings", [])
+        logs = data.get("logs", [])
+        connection_status = data.get("connection_status")
+        connection_error = data.get("connection_error")
+        inventory = data.get("inventory")
+
+        from scheduler.poller import _polling_engine_instance
+        engine = _polling_engine_instance
+        if not engine:
+            return jsonify({"error": "Polling engine not running"}), 503
+
+        if inventory:
+            for k, v in inventory.items():
+                if hasattr(server, k):
+                    setattr(server, k, v)
+
+        if connection_status:
+            try:
+                status_enum = ConnectionStatus(connection_status)
+                engine._mark_connection(server, status_enum, connection_error or "")
+            except ValueError:
+                pass
+
+        if components:
+            for cat, comp_list in components.items():
+                engine._upsert_components(server, cat, comp_list)
+                alert_engine.evaluate_components(db.session, str(server.id), cat, comp_list, app.config["REDFISH_CONFIG"])
+                ws_events.emit_component_update(socketio, str(server.id), cat, [engine._component_dict(x) for x in comp_list])
+
+        if readings:
+            engine._insert_readings(server, readings)
+
+        if logs:
+            new_entries = engine._upsert_logs(server, logs)
+            if new_entries:
+                ws_events.emit_log_entries(socketio, str(server.id), new_entries)
+
+        engine._recompute_server_summary(server)
+        db.session.commit()
+        ws_events.emit_server_summary_update(socketio, server.to_summary_dict())
+
+        return jsonify({"status": "ok"}), 200
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -80,12 +80,20 @@
       <input id="f_ip" placeholder="192.168.1.100" autocomplete="off">
     </div>
     <div class="field">
-      <label>BMC Username</label>
+      <label>BMC Username (Optional if using Agent)</label>
       <input id="f_username" placeholder="root" autocomplete="off">
     </div>
     <div class="field">
-      <label>BMC Password</label>
+      <label>BMC Password (Optional if using Agent)</label>
       <input id="f_password" type="password" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Site ID (Optional)</label>
+      <input id="f_site_id" placeholder="site-uuid" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Agent ID (Optional)</label>
+      <input id="f_agent_id" placeholder="agent-uuid" autocomplete="off">
     </div>
     <div class="field">
       <label>Polling interval (seconds)</label>
@@ -114,6 +122,14 @@
     <div class="field">
       <label>New BMC Password <span style="color:var(--text-faint);font-size:10px;">(leave blank to keep current)</span></label>
       <input id="e_password" type="password" autocomplete="new-password" placeholder="••••••••">
+    </div>
+    <div class="field">
+      <label>Site ID (Optional)</label>
+      <input id="e_site_id" placeholder="site-uuid" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Agent ID (Optional)</label>
+      <input id="e_agent_id" placeholder="agent-uuid" autocomplete="off">
     </div>
     <div class="field">
       <label>Polling interval (seconds)</label>

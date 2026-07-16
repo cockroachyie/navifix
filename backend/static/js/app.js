@@ -167,6 +167,8 @@ function openEditServerModal(server) {
   $("#e_display_name").value = server.display_name || server.hostname;
   $("#e_username").value = server.username || "";
   $("#e_password").value = "";
+  $("#e_site_id").value = server.site_id || "";
+  $("#e_agent_id").value = server.agent_id || "";
   $("#e_interval").value = server.polling_interval_seconds || 30;
   $("#editServerError").style.display = "none";
   $("#editServerModal").classList.add("open");
@@ -186,6 +188,10 @@ function wireEditServerModal() {
     };
     const pwd = $("#e_password").value;
     if (pwd) payload.password = pwd;
+    const sid = $("#e_site_id").value.trim();
+    if (sid) payload.site_id = sid;
+    const aid = $("#e_agent_id").value.trim();
+    if (aid) payload.agent_id = aid;
     
     try {
       await api(`/api/servers/${editServerId}`, { method: "PATCH", body: JSON.stringify(payload) });
@@ -357,7 +363,7 @@ function renderHeader(server) {
   const connLabel = formatConnectionStatus(server.connection_status);
   const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
   const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
-  const supportsDiagnostics = (server.vendor || "").toLowerCase().includes("dell");
+  const supportsDiagnostics = (server.vendor || "").toLowerCase().includes("dell") && !server.agent_id;
   const isDell = (server.vendor || "").toLowerCase().includes("dell");
   const identityLabel = isDell ? "Service Tag" : "Serial Number";
   const identityValue = isDell
@@ -372,6 +378,7 @@ function renderHeader(server) {
     <span class="pill ${server.power_state === 'On' ? 'pill-ok' : 'pill-unknown'}"><i class="fa-solid fa-power-off"></i> ${server.power_state || "Unknown"}</span>
     <span class="pill ${connPillClass}" ${errorDetail ? `title="${escapeHtml(errorDetail)}"` : ''}><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${connLabel}</span>
     <div class="header-stats">
+      ${server.agent_id ? `<div class="stat"><div class="label">Managed By</div><div class="value">Remote Agent</div></div>` : `<div class="stat"><div class="label">Managed By</div><div class="value">Central Server</div></div>`}
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
       <div class="stat">
         <div class="label">${identityLabel}</div>
@@ -944,10 +951,14 @@ function wireAddServerModal() {
       password: $("#f_password").value,
       polling_interval_seconds: parseInt($("#f_interval").value, 10) || 30,
     };
+    const sid = $("#f_site_id").value.trim();
+    if (sid) payload.site_id = sid;
+    const aid = $("#f_agent_id").value.trim();
+    if (aid) payload.agent_id = aid;
     try {
       await api("/api/servers", { method: "POST", body: JSON.stringify(payload) });
       modal.classList.remove("open");
-      ["f_hostname", "f_ip", "f_username", "f_password"].forEach((id) => ($(`#${id}`).value = ""));
+      ["f_hostname", "f_ip", "f_username", "f_password", "f_site_id", "f_agent_id"].forEach((id) => ($(`#${id}`).value = ""));
       await loadServers();
       toast("Server added - discovery in progress");
     } catch (e) {

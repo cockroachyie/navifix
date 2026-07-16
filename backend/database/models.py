@@ -121,6 +121,53 @@ class ComponentCategory(str, enum.Enum):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Site & Agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Site(db.Model):
+    __tablename__ = "sites"
+
+    id = Column(_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, unique=True)
+    description = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    agents = relationship("Agent", back_populates="site")
+    servers = relationship("Server", back_populates="site")
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "name": self.name,
+            "description": self.description,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+class Agent(db.Model):
+    __tablename__ = "agents"
+
+    id = Column(_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    site_id = Column(_UUID(as_uuid=True), ForeignKey("sites.id", ondelete="SET NULL"), nullable=True)
+    name = Column(String(255), nullable=False, unique=True)
+    api_key_hash = Column(String(255), nullable=False)
+    health_status = Column(String(64), default="Unknown")
+    last_seen_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    site = relationship("Site", back_populates="agents")
+    servers = relationship("Server", back_populates="agent")
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "site_id": str(self.site_id) if self.site_id else None,
+            "name": self.name,
+            "health_status": self.health_status,
+            "last_seen_at": self.last_seen_at.isoformat() if self.last_seen_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Server
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -144,9 +191,13 @@ class Server(db.Model):
     firmware_version= Column(String(128))
     part_number     = Column(String(128))
 
-    # ── BMC credentials (password encrypted with Fernet) ────────────────
-    username           = Column(String(128), nullable=False)
-    password_encrypted = Column(Text, nullable=False)
+    # ── BMC credentials (optional for agent-polled servers) ─────────────
+    username           = Column(String(128), nullable=True)
+    password_encrypted = Column(Text, nullable=True)
+
+    # ── Site & Agent assignment ─────────────────────────────────────────
+    site_id            = Column(_UUID(as_uuid=True), ForeignKey("sites.id", ondelete="SET NULL"), nullable=True)
+    agent_id           = Column(_UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
 
     # ── Polling settings ────────────────────────────────────────────────
     polling_interval_seconds = Column(Integer, default=30)
@@ -174,6 +225,8 @@ class Server(db.Model):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # ── Relationships ────────────────────────────────────────────────────
+    site            = relationship("Site",          back_populates="servers")
+    agent           = relationship("Agent",         back_populates="servers")
     components      = relationship("Component",     back_populates="server", cascade="all, delete-orphan")
     sensor_readings = relationship("SensorReading", back_populates="server", cascade="all, delete-orphan")
     log_entries     = relationship("LogEntry",      back_populates="server", cascade="all, delete-orphan")
@@ -186,6 +239,8 @@ class Server(db.Model):
         Keep it small — only what the sidebar needs."""
         return {
             "id": str(self.id),
+            "site_id": str(self.site_id) if self.site_id else None,
+            "agent_id": str(self.agent_id) if self.agent_id else None,
             "hostname": self.hostname,
             "display_name": self.display_name,
             "ip_address": self.ip_address,

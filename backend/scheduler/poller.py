@@ -111,7 +111,8 @@ class PollingEngine:
     def _schedule_due_servers(self):
         with self.app.app_context():
             now = datetime.utcnow()
-            servers = Server.query.filter_by(enabled=True).all()
+            # Only poll servers that are NOT managed by a remote agent
+            servers = Server.query.filter_by(enabled=True, agent_id=None).all()
             for server in servers:
                 last = server.last_poll_attempt
                 interval = server.polling_interval_seconds or self.config["DEFAULT_POLLING_INTERVAL_SECONDS"]
@@ -129,6 +130,12 @@ class PollingEngine:
 
     def poll_server_now(self, server_id: str):
         """Immediate on-demand refresh (called from /api/servers/<id>/poll-now)."""
+        with self.app.app_context():
+            server = Server.query.get(server_id)
+            if server and server.agent_id is not None:
+                logger.warning("Cannot manual poll server %s directly; it is managed by agent %s", server_id, server.agent_id)
+                return
+
         server_id_str = str(server_id)
         with self._active_polls_lock:
             if server_id_str in self._active_polls:
