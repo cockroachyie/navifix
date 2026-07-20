@@ -384,6 +384,10 @@ function renderHeader(server) {
         <div class="label">${identityLabel}</div>
         <div class="value">${escapeHtml(identityValue)}</div>
       </div>
+      <div class="stat">
+        <div class="label">Server ID</div>
+        <div class="value" style="user-select:all; font-family:monospace; cursor:pointer;" onclick="navigator.clipboard.writeText('${server.id}');toast('Server ID copied!');" title="Click to copy">${server.id}</div>
+      </div>
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
       <div class="stat"><button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button></div>
       <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>

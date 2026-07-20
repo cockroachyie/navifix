@@ -23,15 +23,21 @@ logger = logging.getLogger(__name__)
 
 
 def _entries_from_service(client, log_service_uri):
+    """Fetch all log entries from a single Redfish LogService resource.
+
+    Always returns a 2-tuple (entries: list, service_name: str) so callers
+    can safely unpack regardless of whether the service has entries or not.
+    Returns ([], "Unknown") on any missing/empty condition.
+    """
     body = client.get(log_service_uri)
     if not body:
-        return []
+        return [], "Unknown"
     entries_uri = (body.get("Entries") or {}).get("@odata.id")
     if not entries_uri:
-        return []
+        return [], body.get("Name", "Unknown")
     coll = client.get(entries_uri)
     if not coll:
-        return []
+        return [], body.get("Name", "Unknown")
     out = []
     for e in coll.get("Members", []):
         # Entries are sometimes embedded directly in the collection, and

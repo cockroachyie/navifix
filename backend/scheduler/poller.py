@@ -131,7 +131,7 @@ class PollingEngine:
     def poll_server_now(self, server_id: str):
         """Immediate on-demand refresh (called from /api/servers/<id>/poll-now)."""
         with self.app.app_context():
-            server = Server.query.get(server_id)
+            server = db.session.get(Server, server_id)
             if server and server.agent_id is not None:
                 logger.warning("Cannot manual poll server %s directly; it is managed by agent %s", server_id, server.agent_id)
                 return
@@ -161,7 +161,7 @@ class PollingEngine:
     # -- core poll cycle ---------------------------------------------------
 
     def _poll_server(self, server_id: str):
-        server = Server.query.get(server_id)
+        server = db.session.get(Server, server_id)
         if not server or not server.enabled:
             return
 

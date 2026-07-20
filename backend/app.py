@@ -469,7 +469,11 @@ def _register_routes(app: Flask, socketio: SocketIO):
             if new_entries:
                 ws_events.emit_log_entries(socketio, str(server.id), new_entries)
 
-        engine._recompute_server_summary(server)
+        if connection_status == "connected":
+            engine._recompute_server_summary(server)
+        else:
+            # Re-read from DB to get the status we just set in _mark_connection
+            pass
         db.session.commit()
         ws_events.emit_server_summary_update(socketio, server.to_summary_dict())
 
