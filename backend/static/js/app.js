@@ -359,7 +359,7 @@ async function renderMain() {
 
 function renderHeader(server) {
   const header = $("#serverHeader");
-  const lastUpdated = server.last_successful_poll ? new Date(server.last_successful_poll).toLocaleString() : "never";
+  const lastUpdated = server.last_successful_poll ? new Date(server.last_successful_poll).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : "never";
   const connLabel = formatConnectionStatus(server.connection_status);
   const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
   const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
@@ -571,6 +571,31 @@ function renderComponentProperties(c) {
 }
 
 
+function getComponentDisplayName(c) {
+  const p = c.properties || {};
+  const baseName = c.name || "";
+  
+  const identifiers = [
+    p.Id,
+    p.DeviceLocator,
+    p.Socket,
+    p.PhysicalPortNumber,
+    p.PortId,
+    p.MACAddress,
+    p.InterfaceName,
+    p.FQDD,
+    p.SerialNumber
+  ];
+  
+  for (const id of identifiers) {
+    if (id !== undefined && id !== null && String(id) !== baseName) {
+      return `${baseName} (${id})`;
+    }
+  }
+  
+  return baseName || c.odata_id;
+}
+
 function buildComponentItem(c) {
   const item = document.createElement("div");
   const itemId = c.odata_id || c.name || '';
@@ -580,7 +605,7 @@ function buildComponentItem(c) {
   item.innerHTML = `
     <div class="component-item-header">
       <span class="dot" style="width:7px;height:7px;border-radius:50%;background:${healthDotColor(c.health)};flex-shrink:0;"></span>
-      <span class="name">${escapeHtml(c.name || c.odata_id)}</span>
+      <span class="name">${escapeHtml(getComponentDisplayName(c))}</span>
       ${c.location ? `<span class="loc">${escapeHtml(c.location)}</span>` : ""}
       <i class="fa-solid fa-chevron-right chevron" style="font-size:10px;"></i>
     </div>
@@ -622,6 +647,17 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
   const grid = document.createElement("div");
   grid.className = "prop-grid";
 
+  function formatLabel(path) {
+    if (path.includes(" ")) return path; // Already formatted
+    let label = path.replace(/\bAttributes\./g, '');
+    label = label.replace(/\./g, ' ');
+    label = label.replace(/([a-z])([A-Z])/g, '$1 $2');
+    label = label.replace(/([A-Z])([A-Z][a-z])/g, '$1 $2');
+    label = label.replace(/([a-zA-Z])([0-9]+)/g, '$1 $2');
+    label = label.replace(/([0-9]+)([a-zA-Z])/g, '$1 $2');
+    return label.trim();
+  }
+
   function walk(value, path) {
     if (value === null || value === undefined) {
       addRow(path, "null");
@@ -630,7 +666,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
 
     const pathParts = path.split(".");
     const lastPart = pathParts[pathParts.length - 1];
-    if (lastPart === "@odata.id" || lastPart === "@odata.type" || lastPart === "@odata.context") {
+    if (lastPart && (lastPart.includes("@odata") || lastPart === "Links" || lastPart === "Actions")) {
       return;
     }
 
@@ -638,14 +674,18 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
       if (value.length === 0) { addRow(path, "[]"); return; }
       const allPrimitive = value.every((v) => typeof v !== "object" || v === null);
       if (allPrimitive) {
-        addRow(path, JSON.stringify(value));
+        addRow(path, JSON.stringify(value).replace(/,/g, ", "));
       } else {
         value.forEach((v, i) => walk(v, `${path}[${i}]`));
       }
       return;
     }
     if (typeof value === "object") {
-      const keys = Object.keys(value).filter((k) => !path && skipTopLevelKeys.has(k) ? false : true);
+      const keys = Object.keys(value).filter((k) => {
+        if (!path && skipTopLevelKeys.has(k)) return false;
+        if (k.includes("@odata") || k === "Links" || k === "Actions") return false;
+        return true;
+      });
       if (keys.length === 0) {
         if (path) addRow(path, "{}");
         return;
@@ -672,7 +712,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
   function addRow(path, value) {
     const k = document.createElement("div");
     k.className = "k";
-    k.textContent = path;
+    k.textContent = formatLabel(path);
     const v = document.createElement("div");
     v.className = "v";
     v.textContent = value;

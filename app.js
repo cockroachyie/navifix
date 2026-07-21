@@ -282,7 +282,7 @@ async function renderMain() {
 
 function renderHeader(server) {
   const header = $("#serverHeader");
-  const lastUpdated = server.last_successful_poll ? new Date(server.last_successful_poll).toLocaleString() : "never";
+  const lastUpdated = server.last_successful_poll ? new Date(server.last_successful_poll).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : "never";
   const connLabel = formatConnectionStatus(server.connection_status);
   const errorDetail = formatPollError(server.last_poll_error, server.connection_status);
   const connPillClass = server.connection_status === 'connected' ? 'pill-ok' : 'pill-crit';
