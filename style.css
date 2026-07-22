@@ -81,12 +81,10 @@ select {
   color: var(--text);
 }
 
-.topbar .brand .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
+.topbar .brand .brand-logo {
+  height: 38px;
+  width: auto;
+  display: block;
 }
 
 .topbar-actions {
@@ -648,7 +646,21 @@ select {
   outline: none;
 }
 
-.field input:focus {
+.field textarea {
+  width: 100%;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+  font-family: inherit;
+  resize: vertical;
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+
+.field input:focus, .field textarea:focus {
   border-color: var(--accent);
 }
 

@@ -277,7 +277,7 @@ async function renderMain() {
     <div class="cards-grid" id="cardsGrid"></div>
   `;
   renderHeader(server);
-  renderCards(componentsByCategory);
+  renderCards(componentsByCategory, server);
 }
 
 function renderHeader(server) {
@@ -313,9 +313,65 @@ function renderHeader(server) {
   });
 }
 
-function renderCards(componentsByCategory) {
+function buildCustomerCard(server) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.category = "customer_info";
+
+  const isOpen = state.openCards.has("customer_info");
+  if (isOpen) {
+    card.classList.add("open");
+  }
+
+  const name = server.customer_name || "Not specified";
+  const location = server.customer_location || "Not specified";
+  const records = server.maintenance_records || "No maintenance records filed.";
+
+  card.innerHTML = `
+    <div class="card-header">
+      <i class="fa-solid fa-id-card icon" style="color:var(--accent);"></i>
+      <span class="title">Customer & Maintenance Info</span>
+      <i class="fa-solid fa-chevron-right chevron"></i>
+    </div>
+    <div class="card-body" style="padding: 16px; display: ${isOpen ? 'block' : 'none'}; border-top: 1px solid var(--border);">
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; font-weight: 700;">Customer Name</div>
+        <div style="font-size: 13.5px; color: var(--text-bright); font-weight: 600;">${escapeHtml(name)}</div>
+      </div>
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; font-weight: 700;">Customer Location</div>
+        <div style="font-size: 13.5px; color: var(--text-bright); font-weight: 600;">${escapeHtml(location)}</div>
+      </div>
+      <div>
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; font-weight: 700;">Maintenance Records</div>
+        <div style="background: var(--panel-alt); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; line-height: 1.5; color: var(--text-bright); white-space: pre-wrap; font-family: var(--mono); max-height: 180px; overflow-y: auto;">${escapeHtml(records)}</div>
+      </div>
+    </div>
+  `;
+
+  card.querySelector(".card-header").addEventListener("click", () => {
+    if (state.openCards.has("customer_info")) {
+      state.openCards.delete("customer_info");
+      card.classList.remove("open");
+      card.querySelector(".card-body").style.display = "none";
+    } else {
+      state.openCards.add("customer_info");
+      card.classList.add("open");
+      card.querySelector(".card-body").style.display = "block";
+    }
+  });
+
+  return card;
+}
+
+function renderCards(componentsByCategory, server) {
   const grid = $("#cardsGrid");
   grid.innerHTML = "";
+
+  if (server) {
+    grid.appendChild(buildCustomerCard(server));
+  }
+
   for (const category of CATEGORY_ORDER) {
     let comps = componentsByCategory[category] || [];
     if (category === "storage") {
@@ -381,10 +437,6 @@ function buildCategoryCard(category, components) {
 
 function renderCategoryBody(body, category, components) {
   body.innerHTML = "";
-
-  if (HISTORY_METRICS[category]) {
-    body.appendChild(buildHistorySection(category));
-  }
 
   const isUnsupported = components.length === 1 && components[0].odata_id === "meta:unsupported";
 
@@ -797,11 +849,17 @@ function wireAddServerModal() {
       username: $("#f_username").value.trim(),
       password: $("#f_password").value,
       polling_interval_seconds: parseInt($("#f_interval").value, 10) || 30,
+      customer_name: $("#f_customer_name").value.trim(),
+      customer_location: $("#f_customer_location").value.trim(),
+      maintenance_records: $("#f_maintenance_records").value.trim(),
     };
     try {
       await api("/api/servers", { method: "POST", body: JSON.stringify(payload) });
       modal.classList.remove("open");
-      ["f_hostname", "f_ip", "f_username", "f_password"].forEach((id) => ($(`#${id}`).value = ""));
+      ["f_hostname", "f_ip", "f_username", "f_password", "f_customer_name", "f_customer_location", "f_maintenance_records"].forEach((id) => {
+        const el = $(`#${id}`);
+        if (el) el.value = "";
+      });
       await loadServers();
       toast("Server added - discovery in progress");
     } catch (e) {

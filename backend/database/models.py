@@ -179,7 +179,7 @@ class Server(db.Model):
         doc="Stable identifier; never recycled even if the server is re-added.",
     )
 
-    # ── Identity / display ──────────────────────────────────────────────
+    # ── Identity / display / customer metadata ──────────────────────────
     hostname        = Column(String(255), nullable=False)
     display_name    = Column(String(255))
     ip_address      = Column(String(64), nullable=False, unique=True)
@@ -190,6 +190,9 @@ class Server(db.Model):
     asset_tag       = Column(String(128))
     firmware_version= Column(String(128))
     part_number     = Column(String(128))
+    customer_name   = Column(String(255), nullable=True)
+    customer_location = Column(String(255), nullable=True)
+    maintenance_records = Column(Text, nullable=True)
 
     # ── BMC credentials (optional for agent-polled servers) ─────────────
     username           = Column(String(128), nullable=True)
@@ -253,6 +256,9 @@ class Server(db.Model):
             "power_state": self.power_state,
             "last_successful_poll": self.last_successful_poll.isoformat() if self.last_successful_poll else None,
             "last_poll_error": self.last_poll_error,
+            "customer_name": self.customer_name,
+            "customer_location": self.customer_location,
+            "maintenance_records": self.maintenance_records,
         }
 
     def to_dict(self):

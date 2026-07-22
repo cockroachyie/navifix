@@ -146,10 +146,12 @@ function formatPollError(error, connectionStatus) {
 }
 
 let state = {
+  currentView: "fleet",              // "fleet" or "server"
   servers: [],
   selectedServerId: null,
   categoryComponents: {},            // category -> latest components array (for the detail popup)
   openCategoryModal: null,           // which category's popup is currently open, or null
+  openCards: new Set(),              // all categories collapsed by default
   openComponents: new Set(),         // odata_ids of expanded component items (within a popup)
   alerts: [],
   charts: {},                        // category -> Chart.js instance
@@ -180,6 +182,9 @@ function openEditServerModal(server) {
   $("#e_password").value = "";
   $("#e_site_id").value = server.site_id || "";
   $("#e_agent_id").value = server.agent_id || "";
+  $("#e_customer_name").value = server.customer_name || "";
+  $("#e_customer_location").value = server.customer_location || "";
+  $("#e_maintenance_records").value = server.maintenance_records || "";
   $("#e_interval").value = server.polling_interval_seconds || 30;
   $("#editServerError").style.display = "none";
   $("#editServerModal").classList.add("open");
@@ -196,6 +201,9 @@ function wireEditServerModal() {
       display_name: $("#e_display_name").value.trim(),
       username: $("#e_username").value.trim(),
       polling_interval_seconds: parseInt($("#e_interval").value, 10) || 30,
+      customer_name: $("#e_customer_name").value.trim(),
+      customer_location: $("#e_customer_location").value.trim(),
+      maintenance_records: $("#e_maintenance_records").value.trim(),
     };
     const pwd = $("#e_password").value;
     if (pwd) payload.password = pwd;
@@ -210,7 +218,7 @@ function wireEditServerModal() {
       await loadServers();
       if (state.selectedServerId === editServerId) {
         await api(`/api/servers/${editServerId}/poll-now`, { method: "POST" });
-        toast("Credentials updated - checking connection...");
+        toast("Server details updated - checking connection...");
       } else {
         toast("Server updated");
       }
@@ -590,7 +598,7 @@ async function renderMain() {
   $("#backToNodesLink").addEventListener("click", () => setView("nodes"));
   wireComponentSearch();
   renderHeader(server);
-  renderCards(componentsByCategory);
+  renderCards(componentsByCategory, server);
 }
 
 // ---------------------------------------------------------------------
@@ -792,9 +800,65 @@ async function monitorSupportBundle(operationId, button) {
   }
 }
 
-function renderCards(componentsByCategory) {
+function buildCustomerCard(server) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.category = "customer_info";
+
+  const isOpen = state.openCards.has("customer_info");
+  if (isOpen) {
+    card.classList.add("open");
+  }
+
+  const name = server.customer_name || "Not specified";
+  const location = server.customer_location || "Not specified";
+  const records = server.maintenance_records || "No maintenance records filed.";
+
+  card.innerHTML = `
+    <div class="card-header">
+      <i class="fa-solid fa-id-card icon" style="color:var(--accent);"></i>
+      <span class="title">Customer & Maintenance Info</span>
+      <i class="fa-solid fa-chevron-right chevron"></i>
+    </div>
+    <div class="card-body" style="padding: 16px; display: ${isOpen ? 'block' : 'none'}; border-top: 1px solid var(--border);">
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; font-weight: 700;">Customer Name</div>
+        <div style="font-size: 13.5px; color: var(--text-bright); font-weight: 600;">${escapeHtml(name)}</div>
+      </div>
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; font-weight: 700;">Customer Location</div>
+        <div style="font-size: 13.5px; color: var(--text-bright); font-weight: 600;">${escapeHtml(location)}</div>
+      </div>
+      <div>
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; font-weight: 700;">Maintenance Records</div>
+        <div style="background: var(--panel-alt); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; line-height: 1.5; color: var(--text-bright); white-space: pre-wrap; font-family: var(--mono); max-height: 180px; overflow-y: auto;">${escapeHtml(records)}</div>
+      </div>
+    </div>
+  `;
+
+  card.querySelector(".card-header").addEventListener("click", () => {
+    if (state.openCards.has("customer_info")) {
+      state.openCards.delete("customer_info");
+      card.classList.remove("open");
+      card.querySelector(".card-body").style.display = "none";
+    } else {
+      state.openCards.add("customer_info");
+      card.classList.add("open");
+      card.querySelector(".card-body").style.display = "block";
+    }
+  });
+
+  return card;
+}
+
+function renderCards(componentsByCategory, server) {
   const grid = $("#cardsGrid");
   grid.innerHTML = "";
+  
+  if (server) {
+    grid.appendChild(buildCustomerCard(server));
+  }
+
   for (const category of CATEGORY_ORDER) {
     let comps = componentsByCategory[category] || [];
     if (category === "storage") {
@@ -876,10 +940,6 @@ function wireCategoryModal() {
 
 function renderCategoryBody(body, category, components) {
   body.innerHTML = "";
-
-  if (HISTORY_METRICS[category]) {
-    body.appendChild(buildHistorySection(category));
-  }
 
   // Check for unsupported-marker components
   const realComps = components.filter(c => c.odata_id !== "meta:unsupported");
@@ -1420,6 +1480,9 @@ function wireAddServerModal() {
       username: $("#f_username").value.trim(),
       password: $("#f_password").value,
       polling_interval_seconds: parseInt($("#f_interval").value, 10) || 30,
+      customer_name: $("#f_customer_name").value.trim(),
+      customer_location: $("#f_customer_location").value.trim(),
+      maintenance_records: $("#f_maintenance_records").value.trim(),
     };
     const sid = $("#f_site_id").value.trim();
     if (sid) payload.site_id = sid;
@@ -1428,7 +1491,10 @@ function wireAddServerModal() {
     try {
       await api("/api/servers", { method: "POST", body: JSON.stringify(payload) });
       modal.classList.remove("open");
-      ["f_hostname", "f_ip", "f_username", "f_password", "f_site_id", "f_agent_id"].forEach((id) => ($(`#${id}`).value = ""));
+      ["f_hostname", "f_ip", "f_username", "f_password", "f_site_id", "f_agent_id", "f_customer_name", "f_customer_location", "f_maintenance_records"].forEach((id) => {
+        const el = $(`#${id}`);
+        if (el) el.value = "";
+      });
       await loadServers();
       toast("Server added - discovery in progress");
     } catch (e) {
@@ -1449,8 +1515,10 @@ function wireSocket() {
     $("#wsStatus").className = "pill pill-ok";
     $("#wsStatus").innerHTML = `<span class="dot" style="background:var(--ok)"></span> live`;
     const fs = $("#footerStreamStatus");
-    fs.className = "footer-stream live";
-    fs.innerHTML = `<span class="dot"></span> Telemetry Streaming`;
+    if (fs) {
+      fs.className = "footer-stream live";
+      fs.innerHTML = `<span class="dot"></span> Telemetry Streaming`;
+    }
     if (state.selectedServerId) socket.emit("subscribe_server", { server_id: state.selectedServerId });
   });
 
@@ -1458,8 +1526,10 @@ function wireSocket() {
     $("#wsStatus").className = "pill pill-crit";
     $("#wsStatus").innerHTML = `<span class="dot" style="background:var(--crit)"></span> disconnected`;
     const fs = $("#footerStreamStatus");
-    fs.className = "footer-stream down";
-    fs.innerHTML = `<span class="dot"></span> Disconnected`;
+    if (fs) {
+      fs.className = "footer-stream down";
+      fs.innerHTML = `<span class="dot"></span> Disconnected`;
+    }
   });
 
   socket.on("server_summary_update", (summary) => {

@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
 <!-- App CSS -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=11">
 </head>
 <body>
 
@@ -23,8 +23,7 @@
   <!-- Top bar -->
   <div class="topbar">
     <div class="brand">
-      <span class="dot"></span>
-      Navigator Systems
+      <img src="{{ url_for('static', filename='logo.png') }}?v=11" alt="Navigator Systems" class="brand-logo">
     </div>
     <div class="topbar-actions">
       <span id="wsStatus" class="pill pill-unknown"><span class="dot"></span> connecting</span>
@@ -49,10 +48,6 @@
         <span class="nav-count nav-count-alert" id="navAlertCount" style="display:none;"></span>
       </div>
     </nav>
-    <div class="sidebar-footer">
-      <div class="footer-row"><span class="label">Sys Time (IST)</span><span class="value" id="sysTime">--:--:--</span></div>
-      <div class="footer-stream" id="footerStreamStatus"><span class="dot"></span> connecting</div>
-    </div>
   </div>
 
   <!-- Main content -->
@@ -87,6 +82,20 @@
     <div class="field">
       <label>Agent ID (Optional)</label>
       <input id="f_agent_id" placeholder="agent-uuid" autocomplete="off">
+    </div>
+    <div class="field-row" style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      <div class="field">
+        <label>Customer Name (Optional)</label>
+        <input id="f_customer_name" placeholder="Acme Corp" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Customer Location (Optional)</label>
+        <input id="f_customer_location" placeholder="Rack A-12, DC-1" autocomplete="off">
+      </div>
+    </div>
+    <div class="field">
+      <label>Maintenance Records (Optional)</label>
+      <textarea id="f_maintenance_records" placeholder="Enter maintenance logs or service records..." style="width:100%; height:70px; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none; font-family:inherit; resize:vertical;"></textarea>
     </div>
     <div class="field">
       <label>Polling interval (seconds)</label>
@@ -123,6 +132,20 @@
     <div class="field">
       <label>Agent ID (Optional)</label>
       <input id="e_agent_id" placeholder="agent-uuid" autocomplete="off">
+    </div>
+    <div class="field-row" style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      <div class="field">
+        <label>Customer Name (Optional)</label>
+        <input id="e_customer_name" placeholder="Acme Corp" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Customer Location (Optional)</label>
+        <input id="e_customer_location" placeholder="Rack A-12, DC-1" autocomplete="off">
+      </div>
+    </div>
+    <div class="field">
+      <label>Maintenance Records (Optional)</label>
+      <textarea id="e_maintenance_records" placeholder="Enter maintenance logs or service records..." style="width:100%; height:70px; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none; font-family:inherit; resize:vertical;"></textarea>
     </div>
     <div class="field">
       <label>Polling interval (seconds)</label>
@@ -163,6 +186,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <!-- App -->
-<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}?v=11"></script>
 </body>
 </html>

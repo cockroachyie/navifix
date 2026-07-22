@@ -23,8 +23,7 @@
   <!-- Top bar -->
   <div class="topbar">
     <div class="brand">
-      <span class="dot"></span>
-      Navigator Systems
+      <img src="logo.png?v=11" alt="Navigator Systems" class="brand-logo">
     </div>
     <div class="topbar-actions">
       <button class="icon-btn" id="alertsBtn" title="Alerts">
@@ -86,6 +85,20 @@
     <div class="field">
       <label>BMC Password</label>
       <input id="f_password" type="password" autocomplete="new-password">
+    </div>
+    <div class="field-row" style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      <div class="field">
+        <label>Customer Name (Optional)</label>
+        <input id="f_customer_name" placeholder="Acme Corp" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Customer Location (Optional)</label>
+        <input id="f_customer_location" placeholder="Rack A-12, DC-1" autocomplete="off">
+      </div>
+    </div>
+    <div class="field">
+      <label>Maintenance Records (Optional)</label>
+      <textarea id="f_maintenance_records" placeholder="Enter maintenance logs or service records..." style="width:100%; height:70px; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none; font-family:inherit; resize:vertical;"></textarea>
     </div>
     <div class="field">
       <label>Polling interval (seconds)</label>

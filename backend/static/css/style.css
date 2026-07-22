@@ -64,10 +64,10 @@ button, input, select {
   letter-spacing: 0.02em;
   color: var(--text);
 }
-.topbar .brand .dot {
-  width: 9px; height: 9px; border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
+.topbar .brand .brand-logo {
+  height: 38px;
+  width: auto;
+  display: block;
 }
 .topbar-actions { display: flex; align-items: center; gap: 14px; }
 .icon-btn {
@@ -391,7 +391,12 @@ button, input, select {
   width: 100%; background: var(--panel-alt); border: 1px solid var(--border);
   color: var(--text); border-radius: 6px; padding: 8px 10px; outline: none;
 }
-.field input:focus { border-color: var(--accent); }
+.field textarea {
+  width: 100%; background: var(--panel-alt); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 8px 10px; outline: none;
+  font-family: inherit; resize: vertical; font-size: 13px; transition: border-color 0.15s ease;
+}
+.field input:focus, .field textarea:focus { border-color: var(--accent); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .modal-error { color: var(--crit); font-size: 12px; margin-top: 6px; }
 

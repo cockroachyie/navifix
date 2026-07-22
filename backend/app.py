@@ -199,7 +199,10 @@ def _register_routes(app: Flask, socketio: SocketIO):
             polling_interval_seconds=int(data.get("polling_interval_seconds") or 30),
             enabled=True,
             site_id=site_id,
-            agent_id=agent_id
+            agent_id=agent_id,
+            customer_name=data.get("customer_name"),
+            customer_location=data.get("customer_location"),
+            maintenance_records=data.get("maintenance_records")
         )
         db.session.add(server)
         db.session.commit()
@@ -220,6 +223,9 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if "ip_address" in data:            server.ip_address = data["ip_address"]
         if "username" in data:              server.username = data["username"]
         if "password" in data:              server.password_encrypted = cipher.encrypt(data["password"]) if data["password"] else None
+        if "customer_name" in data:         server.customer_name = data["customer_name"]
+        if "customer_location" in data:     server.customer_location = data["customer_location"]
+        if "maintenance_records" in data:   server.maintenance_records = data["maintenance_records"]
         if "site_id" in data:
             if data["site_id"]:
                 try:
