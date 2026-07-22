@@ -148,10 +148,21 @@ function formatPollError(error, connectionStatus) {
 let state = {
   servers: [],
   selectedServerId: null,
-  openCards: new Set(["chassis"]),   // categories expanded by default
-  openComponents: new Set(),         // odata_ids of expanded component items
+  categoryComponents: {},            // category -> latest components array (for the detail popup)
+  openCategoryModal: null,           // which category's popup is currently open, or null
+  openComponents: new Set(),         // odata_ids of expanded component items (within a popup)
   alerts: [],
   charts: {},                        // category -> Chart.js instance
+  view: "overview",                  // 'overview' | 'nodes' | 'alerts' | 'server'
+  nodesFilter: { search: "", tab: "all" },
+  alertsFilter: "all",               // 'all' | 'critical' | 'warning' | 'info'
+};
+
+const SEVERITY_ORDER = ["critical", "warning", "info"];
+const SEVERITY_META = {
+  critical: { color: "var(--crit)", label: "Critical" },
+  warning:  { color: "var(--warn)", label: "Warning" },
+  info:     { color: "var(--accent)", label: "Info" },
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -214,17 +225,10 @@ function wireEditServerModal() {
     try {
       await api(`/api/servers/${editServerId}`, { method: "DELETE" });
       modal.classList.remove("open");
-      if (state.selectedServerId === editServerId) {
-        state.selectedServerId = null;
-        $("#main").innerHTML = `
-          <div class="no-server-selected">
-            <i class="fa-solid fa-server" style="font-size: 40px; color: var(--accent); opacity:.4;"></i>
-            <div style="margin-top:12px; font-size:15px; font-weight:600;">Select a server</div>
-            <div style="font-size:12px; color:var(--text-faint);">Choose a server from the sidebar to view its hardware status</div>
-          </div>
-        `;
-      }
+      const wasOpenServer = state.selectedServerId === editServerId;
+      if (wasOpenServer) state.selectedServerId = null;
       await loadServers();
+      if (wasOpenServer) setView("nodes");
       toast("Server removed");
     } catch (e) {
       const errorEl = $("#editServerError");
@@ -284,46 +288,267 @@ function connDotColor(status) {
 }
 
 // ---------------------------------------------------------------------
-// Sidebar: server list
+// Servers data load (used by all views)
 // ---------------------------------------------------------------------
 async function loadServers() {
   state.servers = await api("/api/servers");
-  renderServerList();
+  renderNavCounts();
+  if (state.view === "overview") renderOverviewView();
+  if (state.view === "nodes") updateNodesTable();
+}
+
+function renderNavCounts() {
+  const nodeCountEl = $("#navNodeCount");
+  if (nodeCountEl) nodeCountEl.textContent = state.servers.length || "";
+}
+
+function healthBucket(healthStatus) {
+  if (healthStatus === "OK") return "ok";
+  if (healthStatus === "Warning") return "warn";
+  if (healthStatus === "Critical") return "crit";
+  return "unknown";
 }
 
 // ---------------------------------------------------------------------
-// Render server list sidebar with search filter and status details
+// View router
 // ---------------------------------------------------------------------
-function renderServerList() {
-  const container = $("#serverList");
-  const filter = ($("#serverSearch").value || "").toLowerCase();
-  const filtered = state.servers.filter((s) =>
-    (s.hostname + s.ip_address + (s.display_name || "")).toLowerCase().includes(filter)
-  );
+function setView(view) {
+  if (state.view !== "server" && view !== "server" && state.selectedServerId) {
+    // leaving a server detail view (not just switching within it) - stop
+    // getting live component updates for a server we're no longer looking at
+  }
+  if (view !== "server" && state.selectedServerId) {
+    socket.emit("unsubscribe_server", { server_id: state.selectedServerId });
+    state.selectedServerId = null;
+    closeCategoryModal();
+  }
+  state.view = view;
+  $all(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.view === view));
+  if (view === "overview") renderOverviewView();
+  else if (view === "nodes") renderNodesView();
+  else if (view === "alerts") renderAlertsView();
+}
 
+function wireNav() {
+  $all(".nav-item").forEach((el) => {
+    el.addEventListener("click", () => setView(el.dataset.view));
+  });
+}
+
+// ---------------------------------------------------------------------
+// Fleet Overview
+// ---------------------------------------------------------------------
+function renderOverviewView() {
+  const main = $("#main");
+  const counts = { ok: 0, warn: 0, crit: 0, unknown: 0 };
+  for (const s of state.servers) counts[healthBucket(s.health_status)]++;
+
+  const recentAlerts = [...state.alerts]
+    .sort((a, b) => new Date(b.last_occurred_at) - new Date(a.last_occurred_at))
+    .slice(0, 6);
+
+  const vendorGroups = {};
+  for (const s of state.servers) {
+    const key = s.vendor || "Unknown Vendor";
+    (vendorGroups[key] = vendorGroups[key] || []).push(s);
+  }
+
+  main.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1>Fleet Overview</h1>
+        <div class="sub">${state.servers.length} node${state.servers.length === 1 ? "" : "s"} monitored</div>
+      </div>
+    </div>
+    <div class="stats-strip">
+      <div class="stat-card"><div class="label">Total Nodes</div><div class="value">${state.servers.length}</div></div>
+      <div class="stat-card ok"><div class="label">Healthy</div><div class="value">${counts.ok}</div></div>
+      <div class="stat-card warn"><div class="label">Warning</div><div class="value">${counts.warn}</div></div>
+      <div class="stat-card crit"><div class="label">Critical</div><div class="value">${counts.crit}</div></div>
+    </div>
+    <div class="overview-grid">
+      <div class="panel-box">
+        <div class="panel-box-header">
+          <span>Recent Alerts</span>
+          <a href="#" id="viewAllAlertsLink">View all &rarr;</a>
+        </div>
+        <div class="panel-box-body" id="overviewAlertsPreview"></div>
+      </div>
+      <div class="panel-box">
+        <div class="panel-box-header"><span>Vendor Health</span></div>
+        <div class="panel-box-body" id="overviewVendorMatrix"></div>
+      </div>
+    </div>
+  `;
+
+  $("#viewAllAlertsLink").addEventListener("click", (e) => { e.preventDefault(); setView("alerts"); });
+
+  const previewEl = $("#overviewAlertsPreview");
+  if (recentAlerts.length === 0) {
+    previewEl.innerHTML = `<div class="panel-box-empty">No open alerts.</div>`;
+  } else {
+    previewEl.innerHTML = "";
+    for (const a of recentAlerts) {
+      const server = state.servers.find((s) => s.id === a.server_id);
+      const sev = SEVERITY_META[a.severity] || SEVERITY_META.info;
+      const el = document.createElement("div");
+      el.className = "preview-alert-item";
+      el.innerHTML = `
+        <span class="sev-dot" style="background:${sev.color}"></span>
+        <div class="txt">
+          <div class="msg">${escapeHtml(server ? (server.display_name || server.hostname) : a.server_id)} &middot; ${escapeHtml(a.message)}</div>
+          <div class="meta">${escapeHtml(a.category)} &middot; ${timeAgoOrLocal(a.last_occurred_at)}</div>
+        </div>
+      `;
+      el.addEventListener("click", () => setView("alerts"));
+      previewEl.appendChild(el);
+    }
+  }
+
+  const vendorEl = $("#overviewVendorMatrix");
+  const vendorNames = Object.keys(vendorGroups).sort();
+  if (vendorNames.length === 0) {
+    vendorEl.innerHTML = `<div class="panel-box-empty">No nodes yet.</div>`;
+  } else {
+    vendorEl.innerHTML = "";
+    for (const name of vendorNames) {
+      const servers = vendorGroups[name];
+      const c = { ok: 0, warn: 0, crit: 0, unknown: 0 };
+      for (const s of servers) c[healthBucket(s.health_status)]++;
+      const card = document.createElement("div");
+      card.className = "vendor-card";
+      card.innerHTML = `
+        <div class="vendor-card-top">
+          <span class="name">${escapeHtml(name)}</span>
+          <span class="count">${servers.length} node${servers.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="health-bar">
+          ${servers.map((s) => `<span class="seg ${healthBucket(s.health_status)}" title="${escapeHtml(s.display_name || s.hostname)}"></span>`).join("")}
+        </div>
+        <div class="vendor-card-counts">
+          <span><span class="dot" style="background:var(--ok)"></span>${c.ok}</span>
+          <span><span class="dot" style="background:var(--warn)"></span>${c.warn}</span>
+          <span><span class="dot" style="background:var(--crit)"></span>${c.crit}</span>
+        </div>
+      `;
+      vendorEl.appendChild(card);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Nodes page (replaces the old always-visible sidebar server list)
+// ---------------------------------------------------------------------
+function renderNodesView() {
+  const main = $("#main");
+  main.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1>Nodes</h1>
+        <div class="sub" id="nodesSubCount"></div>
+      </div>
+      <button class="btn-primary" id="addServerBtn"><i class="fa-solid fa-plus"></i> Add server</button>
+    </div>
+    <div class="nodes-toolbar">
+      <input type="text" id="nodeSearch" placeholder="Search by name or IP address..." autocomplete="off" value="${escapeHtml(state.nodesFilter.search)}">
+    </div>
+    <div class="filter-tabs" id="nodeFilterTabs"></div>
+    <div class="nodes-table">
+      <div class="nodes-table-head">
+        <span>Status</span><span>Node</span><span>Vendor / Model</span>
+        <span>Power</span><span>Connection</span><span>Last Updated</span>
+      </div>
+      <div id="nodesTableBody"></div>
+    </div>
+  `;
+  $("#addServerBtn").addEventListener("click", () => $("#addServerModal").classList.add("open"));
+  $("#nodeSearch").addEventListener("input", (e) => {
+    state.nodesFilter.search = e.target.value;
+    updateNodesTable();
+  });
+  updateNodesTable();
+}
+
+function updateNodesTable() {
+  if (state.view !== "nodes") return;
+  const counts = { all: state.servers.length, ok: 0, warn: 0, crit: 0, unreachable: 0 };
+  for (const s of state.servers) {
+    const b = healthBucket(s.health_status);
+    if (b === "ok") counts.ok++;
+    else if (b === "warn") counts.warn++;
+    else if (b === "crit") counts.crit++;
+    if (s.connection_status === "unreachable" || s.connection_status === "auth_failed") counts.unreachable++;
+  }
+
+  const tabs = [
+    ["all", `All (${counts.all})`],
+    ["crit", `Critical (${counts.crit})`],
+    ["warn", `Warning (${counts.warn})`],
+    ["ok", `Healthy (${counts.ok})`],
+    ["unreachable", `Unreachable (${counts.unreachable})`],
+  ];
+  const tabsEl = $("#nodeFilterTabs");
+  tabsEl.innerHTML = tabs.map(([key, label]) =>
+    `<button class="filter-tab${state.nodesFilter.tab === key ? " active" : ""}" data-tab="${key}">${label}</button>`
+  ).join("");
+  $all(".filter-tab", tabsEl).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.nodesFilter.tab = btn.dataset.tab;
+      updateNodesTable();
+    });
+  });
+
+  const search = state.nodesFilter.search.toLowerCase();
+  let filtered = state.servers.filter((s) =>
+    ((s.display_name || s.hostname || "") + " " + (s.ip_address || "")).toLowerCase().includes(search)
+  );
+  if (state.nodesFilter.tab === "crit") filtered = filtered.filter((s) => healthBucket(s.health_status) === "crit");
+  else if (state.nodesFilter.tab === "warn") filtered = filtered.filter((s) => healthBucket(s.health_status) === "warn");
+  else if (state.nodesFilter.tab === "ok") filtered = filtered.filter((s) => healthBucket(s.health_status) === "ok");
+  else if (state.nodesFilter.tab === "unreachable") filtered = filtered.filter((s) => s.connection_status === "unreachable" || s.connection_status === "auth_failed");
+
+  $("#nodesSubCount").textContent = `${filtered.length} of ${state.servers.length} nodes shown`;
+
+  const body = $("#nodesTableBody");
   if (filtered.length === 0) {
-    container.innerHTML = `<div class="sidebar-empty">No servers ${state.servers.length ? "match your search" : "yet. Click + to add one."}</div>`;
+    body.innerHTML = `<div class="sidebar-empty">No nodes ${state.servers.length ? "match your search/filter" : "yet. Click \u201cAdd server\u201d to add one."}</div>`;
     return;
   }
-
-  container.innerHTML = "";
+  body.innerHTML = "";
   for (const s of filtered) {
     const row = document.createElement("div");
-    row.className = "server-row" + (s.id === state.selectedServerId ? " active" : "");
+    row.className = "node-row";
     row.innerHTML = `
-      <span class="health-dot" style="background:${healthDotColor(s.health_status)}"></span>
-      <div class="server-meta">
-        <div class="server-name">${escapeHtml(s.display_name || s.hostname)}</div>
-        <div class="server-ip">${escapeHtml(s.ip_address)}</div>
+      <div class="status-cell">
+        <span class="health-dot" style="background:${healthDotColor(s.health_status)};width:8px;height:8px;border-radius:50%;display:inline-block;"></span>
+        ${escapeHtml(s.health_status || "Unknown")}
       </div>
-      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
-        <span class="conn-indicator" style="background:${connDotColor(s.connection_status)}" title="${formatConnectionStatus(s.connection_status)}"></span>
-        <i class="fa-solid ${s.power_state === 'On' ? 'fa-power-off' : 'fa-circle-stop'} power-icon" title="${s.power_state}"></i>
+      <div class="name-cell">
+        <div class="name">${escapeHtml(s.display_name || s.hostname)}</div>
+        <div class="ip">${escapeHtml(s.ip_address)}</div>
       </div>
+      <div class="vendor-cell">${escapeHtml(s.vendor || "Unknown")} ${escapeHtml(s.model || "")}</div>
+      <div class="power-cell"><i class="fa-solid ${s.power_state === 'On' ? 'fa-power-off' : 'fa-circle-stop'}"></i> ${escapeHtml(s.power_state || "Unknown")}</div>
+      <div class="conn-cell"><span class="pill ${s.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(s.connection_status)}"></span>${formatConnectionStatus(s.connection_status)}</span></div>
+      <div class="updated-cell">${s.last_successful_poll ? timeAgoOrLocal(s.last_successful_poll) : "never"}</div>
     `;
     row.addEventListener("click", () => selectServer(s.id));
-    container.appendChild(row);
+    body.appendChild(row);
   }
+}
+
+function timeAgoOrLocal(isoString) {
+  const withZ = isoString + (isoString.endsWith("Z") ? "" : "Z");
+  return new Date(withZ).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+}
+
+function startClock() {
+  const tick = () => {
+    const el = $("#sysTime");
+    if (el) el.textContent = new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+  };
+  tick();
+  setInterval(tick, 1000);
 }
 
 function escapeHtml(str) {
@@ -335,12 +560,14 @@ function escapeHtml(str) {
 // Server selection + header + cards
 // ---------------------------------------------------------------------
 async function selectServer(serverId) {
-  if (state.selectedServerId) {
+  if (state.selectedServerId && state.selectedServerId !== serverId) {
     socket.emit("unsubscribe_server", { server_id: state.selectedServerId });
   }
+  closeCategoryModal();
   state.selectedServerId = serverId;
+  state.view = "server";
+  $all(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.view === "nodes"));
   socket.emit("subscribe_server", { server_id: serverId });
-  renderServerList();
   await renderMain();
 }
 
@@ -350,11 +577,107 @@ async function renderMain() {
   const componentsByCategory = await api(`/api/servers/${state.selectedServerId}/components`);
 
   main.innerHTML = `
+    <div class="back-link" id="backToNodesLink"><i class="fa-solid fa-arrow-left"></i> Back to Nodes</div>
+    <div class="component-search-wrap">
+      <i class="fa-solid fa-magnifying-glass component-search-icon"></i>
+      <input type="text" id="componentSearch" class="component-search-input" placeholder="Search across Battery, Chassis, Fans, Memory, Storage..." autocomplete="off">
+      <button class="icon-btn component-search-clear" id="componentSearchClear" style="display:none;"><i class="fa-solid fa-xmark"></i></button>
+      <div class="component-search-results" id="componentSearchResults" style="display:none;"></div>
+    </div>
     <div class="server-header" id="serverHeader"></div>
     <div class="cards-grid" id="cardsGrid"></div>
   `;
+  $("#backToNodesLink").addEventListener("click", () => setView("nodes"));
+  wireComponentSearch();
   renderHeader(server);
   renderCards(componentsByCategory);
+}
+
+// ---------------------------------------------------------------------
+// Component search: typeahead across every category card for the
+// currently open server (Battery, Chassis, Fans, ...), not just the one
+// popup you happen to have open. Picking a result opens that category's
+// popup and jumps straight to (and expands) the matching component.
+// ---------------------------------------------------------------------
+function wireComponentSearch() {
+  const input = $("#componentSearch");
+  const clearBtn = $("#componentSearchClear");
+  const results = $("#componentSearchResults");
+
+  input.addEventListener("input", () => {
+    clearBtn.style.display = input.value ? "flex" : "none";
+    updateComponentSearchResults(input.value);
+  });
+  clearBtn.addEventListener("click", () => {
+    input.value = "";
+    clearBtn.style.display = "none";
+    results.style.display = "none";
+    input.focus();
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".component-search-wrap")) results.style.display = "none";
+  });
+  input.addEventListener("focus", () => {
+    if (input.value) updateComponentSearchResults(input.value);
+  });
+}
+
+function updateComponentSearchResults(query) {
+  const results = $("#componentSearchResults");
+  const q = query.trim().toLowerCase();
+  if (!q) { results.style.display = "none"; return; }
+
+  const matches = [];
+  for (const category of CATEGORY_ORDER) {
+    const comps = (state.categoryComponents[category] || []).filter((c) => c.odata_id !== "meta:unsupported");
+    for (const c of comps) {
+      const name = getComponentDisplayName(c);
+      const haystack = `${name} ${c.location || ""} ${CATEGORY_META[category].label}`.toLowerCase();
+      if (haystack.includes(q)) matches.push({ category, component: c, name });
+      if (matches.length >= 40) break;
+    }
+    if (matches.length >= 40) break;
+  }
+
+  if (matches.length === 0) {
+    results.innerHTML = `<div class="search-empty">No components match "${escapeHtml(query)}"</div>`;
+    results.style.display = "block";
+    return;
+  }
+
+  results.innerHTML = "";
+  for (const m of matches) {
+    const row = document.createElement("div");
+    row.className = "search-result-row";
+    row.innerHTML = `
+      <span class="search-cat-badge">${escapeHtml(CATEGORY_META[m.category].label)}</span>
+      <div class="search-result-info">
+        <div class="name">${escapeHtml(m.name)}</div>
+        <div class="sub">${m.component.location ? escapeHtml(m.component.location) + " &middot; " : ""}Health: ${escapeHtml(m.component.health || "Unknown")}</div>
+      </div>
+      <span class="dot" style="background:${healthDotColor(m.component.health)}"></span>
+      <i class="fa-solid fa-arrow-right"></i>
+    `;
+    row.addEventListener("click", () => {
+      results.style.display = "none";
+      $("#componentSearch").value = "";
+      $("#componentSearchClear").style.display = "none";
+      openCategoryModal(m.category);
+      jumpToComponentInModal(m.component);
+    });
+    results.appendChild(row);
+  }
+  results.style.display = "block";
+}
+
+function jumpToComponentInModal(component) {
+  const itemId = component.odata_id || component.name || "";
+  requestAnimationFrame(() => {
+    const el = $(`#categoryModalBody .component-item[data-odata-id="${CSS.escape(itemId)}"]`);
+    if (!el) return;
+    if (!el.classList.contains("open")) el.querySelector(".component-item-header").click();
+    el.scrollIntoView({ block: "center" });
+  });
 }
 
 function renderHeader(server) {
@@ -370,13 +693,20 @@ function renderHeader(server) {
     ? (server.service_tag || "—")
     : (server.serial_number || "—");
   header.innerHTML = `
-    <div>
-      <h1>${escapeHtml(server.display_name || server.hostname)}</h1>
-      <div class="sub">${escapeHtml(server.ip_address)} &middot; ${escapeHtml(server.vendor || "unknown vendor")} ${escapeHtml(server.model || "")}</div>
+    <div class="server-header-top">
+      <div>
+        <h1>${escapeHtml(server.display_name || server.hostname)}</h1>
+        <div class="sub">${escapeHtml(server.ip_address)} &middot; ${escapeHtml(server.vendor || "unknown vendor")} ${escapeHtml(server.model || "")}</div>
+      </div>
+      <span class="pill ${healthClass(server.health_status)}"><span class="dot" style="background:${healthDotColor(server.health_status)}"></span>${server.health_status || "Unknown"}</span>
+      <span class="pill ${server.power_state === 'On' ? 'pill-ok' : 'pill-unknown'}"><i class="fa-solid fa-power-off"></i> ${server.power_state || "Unknown"}</span>
+      <span class="pill ${connPillClass}" ${errorDetail ? `title="${escapeHtml(errorDetail)}"` : ''}><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${connLabel}</span>
+      <div class="header-actions">
+        <button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
+        <button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button>
+        ${supportsDiagnostics ? '<button class="btn-secondary" id="supportBundleBtn"><i class="fa-solid fa-file-zipper"></i> Support bundle</button>' : ''}
+      </div>
     </div>
-    <span class="pill ${healthClass(server.health_status)}"><span class="dot" style="background:${healthDotColor(server.health_status)}"></span>${server.health_status || "Unknown"}</span>
-    <span class="pill ${server.power_state === 'On' ? 'pill-ok' : 'pill-unknown'}"><i class="fa-solid fa-power-off"></i> ${server.power_state || "Unknown"}</span>
-    <span class="pill ${connPillClass}" ${errorDetail ? `title="${escapeHtml(errorDetail)}"` : ''}><span class="dot" style="background:${connDotColor(server.connection_status)}"></span>${connLabel}</span>
     <div class="header-stats">
       ${server.agent_id ? `<div class="stat"><div class="label">Managed By</div><div class="value">Remote Agent</div></div>` : `<div class="stat"><div class="label">Managed By</div><div class="value">Central Server</div></div>`}
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
@@ -389,9 +719,6 @@ function renderHeader(server) {
         <div class="value" style="user-select:all; font-family:monospace; cursor:pointer;" onclick="navigator.clipboard.writeText('${server.id}');toast('Server ID copied!');" title="Click to copy">${server.id}</div>
       </div>
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
-      <div class="stat"><button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button></div>
-      <div class="stat"><button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button></div>
-      ${supportsDiagnostics ? '<div class="stat"><button class="btn-secondary" id="supportBundleBtn"><i class="fa-solid fa-file-zipper"></i> Support bundle</button></div>' : ''}
     </div>
   `;
   if (errorDetail && server.connection_status !== 'connected') {
@@ -477,6 +804,7 @@ function renderCards(componentsByCategory) {
         componentsByCategory["storage_volume"] || []
       );
     }
+    state.categoryComponents[category] = comps;
     grid.appendChild(buildCategoryCard(category, comps));
   }
   // logs card gets its own custom body
@@ -494,9 +822,8 @@ function worstHealth(components) {
 
 function buildCategoryCard(category, components) {
   const meta = CATEGORY_META[category];
-  const isOpen = state.openCards.has(category);
   const card = document.createElement("div");
-  card.className = "card" + (isOpen ? " open" : "");
+  card.className = "card";
   card.dataset.category = category;
 
   // Filter out unsupported markers before computing display count
@@ -513,24 +840,38 @@ function buildCategoryCard(category, components) {
       <span class="count">${countLabel}</span>
       <i class="fa-solid fa-chevron-right chevron"></i>
     </div>
-    <div class="card-body"></div>
   `;
-  const header = card.querySelector(".card-header");
-  const body = card.querySelector(".card-body");
-
-  header.addEventListener("click", () => {
-    const nowOpen = !card.classList.contains("open");
-    card.classList.toggle("open");
-    if (nowOpen) {
-      state.openCards.add(category);
-      renderCategoryBody(body, category, components);
-    } else {
-      state.openCards.delete(category);
-    }
-  });
-
-  if (isOpen) renderCategoryBody(body, category, components);
+  card.querySelector(".card-header").addEventListener("click", () => openCategoryModal(category));
   return card;
+}
+
+// ---------------------------------------------------------------------
+// Category detail popup - shows one category's full component list in
+// a scrollable overlay instead of expanding the card inline (inline
+// expansion stretched every other card in the same CSS Grid row).
+// ---------------------------------------------------------------------
+function openCategoryModal(category) {
+  state.openCategoryModal = category;
+  const meta = CATEGORY_META[category];
+  $("#categoryModalIcon").className = `fa-solid ${meta.icon}`;
+  $("#categoryModalTitle").textContent = meta.label;
+  const comps = state.categoryComponents[category] || [];
+  const realComps = comps.filter((c) => c.odata_id !== "meta:unsupported");
+  $("#categoryModalCount").textContent = realComps.length ? `${realComps.length} item${realComps.length === 1 ? "" : "s"}` : "";
+  renderCategoryBody($("#categoryModalBody"), category, comps);
+  $("#categoryModalOverlay").classList.add("open");
+}
+
+function closeCategoryModal() {
+  state.openCategoryModal = null;
+  $("#categoryModalOverlay").classList.remove("open");
+}
+
+function wireCategoryModal() {
+  $("#categoryModalClose").addEventListener("click", closeCategoryModal);
+  $("#categoryModalOverlay").addEventListener("click", (e) => {
+    if (e.target.id === "categoryModalOverlay") closeCategoryModal();
+  });
 }
 
 function renderCategoryBody(body, category, components) {
@@ -558,9 +899,17 @@ function renderCategoryBody(body, category, components) {
     return;
   }
 
+  body.appendChild(buildComponentTableHead());
   for (const c of realComps) {
     body.appendChild(buildComponentItem(c));
   }
+}
+
+function buildComponentTableHead() {
+  const head = document.createElement("div");
+  head.className = "component-table-head";
+  head.innerHTML = `<span></span><span>Name</span><span>Location</span><span></span>`;
+  return head;
 }
 
 function renderComponentProperties(c) {
@@ -660,7 +1009,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
 
   function walk(value, path) {
     if (value === null || value === undefined) {
-      addRow(path, "null");
+      addRow(path, "null", true);
       return;
     }
 
@@ -671,7 +1020,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
     }
 
     if (Array.isArray(value)) {
-      if (value.length === 0) { addRow(path, "[]"); return; }
+      if (value.length === 0) { addRow(path, "[]", true); return; }
       const allPrimitive = value.every((v) => typeof v !== "object" || v === null);
       if (allPrimitive) {
         addRow(path, JSON.stringify(value).replace(/,/g, ", "));
@@ -687,7 +1036,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
         return true;
       });
       if (keys.length === 0) {
-        if (path) addRow(path, "{}");
+        if (path) addRow(path, "{}", true);
         return;
       }
       for (const k of keys) {
@@ -706,16 +1055,21 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
       }
       return;
     }
+    if (value === "") { addRow(path, "(empty)", true); return; }
     addRow(path, String(value));
   }
 
-  function addRow(path, value) {
+  function addRow(path, value, isEmpty = false) {
     const k = document.createElement("div");
     k.className = "k";
     k.textContent = formatLabel(path);
     const v = document.createElement("div");
     v.className = "v";
-    v.textContent = value;
+    if (isEmpty) {
+      v.innerHTML = `<span class="v-raw">${escapeHtml(value)}</span><span class="v-empty-note">Not provided by this BMC</span>`;
+    } else {
+      v.textContent = value;
+    }
     grid.appendChild(k);
     grid.appendChild(v);
   }
@@ -910,7 +1264,7 @@ function buildLogsCard() {
     rowsEl.innerHTML = entries.map((e) => `
       <div class="log-row">
         <span class="sev" style="color:${healthDotColor(e.severity === 'OK' ? 'OK' : e.severity)}">${escapeHtml(e.severity)}</span>
-        <span class="ts">${e.created_at ? new Date(e.created_at).toLocaleString() : ""}</span>
+        <span class="ts">${e.created_at ? new Date(e.created_at + (e.created_at.endsWith('Z') ? '' : 'Z')).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : ""}</span>
         <span>${escapeHtml(e.message || e.message_id || "")}</span>
       </div>
     `).join("");
@@ -927,54 +1281,124 @@ function buildLogsCard() {
 }
 
 // ---------------------------------------------------------------------
-// Alerts drawer
+// Alerts: shared data load + nav badge + full page (sorted critical -> warning -> info)
 // ---------------------------------------------------------------------
 async function loadAlerts() {
   state.alerts = await api("/api/alerts?resolved=false");
-  renderAlertsBadge();
-  renderAlertsDrawer();
+  renderAlertsNavBadge();
+  if (state.view === "overview") renderOverviewView();
+  if (state.view === "alerts") updateAlertsList();
 }
 
-function renderAlertsBadge() {
-  const badge = $("#alertsBadge");
+function renderAlertsNavBadge() {
+  const badge = $("#navAlertCount");
   const count = state.alerts.length;
-  badge.style.display = count > 0 ? "flex" : "none";
+  badge.style.display = count > 0 ? "inline-block" : "none";
   badge.textContent = count > 99 ? "99+" : count;
 }
 
-function renderAlertsDrawer() {
-  const list = $("#alertsList");
-  if (state.alerts.length === 0) {
-    list.innerHTML = `<div class="sidebar-empty">No open alerts.</div>`;
+function renderAlertsView() {
+  const main = $("#main");
+  main.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1>Alerts</h1>
+        <div class="sub" id="alertsSubCount"></div>
+      </div>
+    </div>
+    <div class="alerts-summary" id="alertsSummary"></div>
+    <div id="alertsGroupedList"></div>
+  `;
+  updateAlertsList();
+}
+
+function updateAlertsList() {
+  if (state.view !== "alerts") return;
+  const counts = { all: state.alerts.length, critical: 0, warning: 0, info: 0 };
+  for (const a of state.alerts) if (counts[a.severity] !== undefined) counts[a.severity]++;
+
+  const summaryEl = $("#alertsSummary");
+  const cards = [
+    ["all", "All", counts.all, ""],
+    ["critical", "Critical", counts.critical, "crit"],
+    ["warning", "Warning", counts.warning, "warn"],
+    ["info", "Info", counts.info, ""],
+  ];
+  summaryEl.innerHTML = cards.map(([key, label, count, cls]) =>
+    `<div class="stat-card ${cls}${state.alertsFilter === key ? " selected" : ""}" data-filter="${key}">
+      <div class="label">${label}</div><div class="value">${count}</div>
+    </div>`
+  ).join("");
+  $all(".stat-card", summaryEl).forEach((card) => {
+    card.addEventListener("click", () => {
+      state.alertsFilter = card.dataset.filter;
+      updateAlertsList();
+    });
+  });
+
+  const filtered = state.alertsFilter === "all"
+    ? state.alerts
+    : state.alerts.filter((a) => a.severity === state.alertsFilter);
+  $("#alertsSubCount").textContent = `${filtered.length} open alert${filtered.length === 1 ? "" : "s"}`;
+
+  const listEl = $("#alertsGroupedList");
+  if (filtered.length === 0) {
+    listEl.innerHTML = `<div class="panel-box"><div class="panel-box-empty">No open alerts.</div></div>`;
     return;
   }
-  list.innerHTML = "";
-  for (const a of state.alerts) {
-    const server = state.servers.find((s) => s.id === a.server_id);
-    const el = document.createElement("div");
-    el.className = "alert-item";
-    el.innerHTML = `
-      <div class="top">
-        <span class="pill ${healthClass(a.severity === 'critical' ? 'Critical' : 'Warning')}">${a.severity}</span>
-        <strong>${escapeHtml(server ? (server.display_name || server.hostname) : a.server_id)}</strong>
-      </div>
-      <div class="msg">${escapeHtml(a.message)}</div>
-      <div class="meta">${a.category} &middot; ${a.occurrence_count}x &middot; last ${new Date(a.last_occurred_at).toLocaleString()}</div>
-      <div class="alert-actions">
-        ${!a.acknowledged ? `<button class="btn-secondary ack-btn">Acknowledge</button>` : `<span class="meta">Acknowledged</span>`}
-        <button class="btn-secondary resolve-btn">Resolve</button>
-      </div>
-    `;
-    el.querySelector(".ack-btn")?.addEventListener("click", async () => {
-      await api(`/api/alerts/${a.id}/acknowledge`, { method: "POST", body: JSON.stringify({}) });
-      loadAlerts();
-    });
-    el.querySelector(".resolve-btn").addEventListener("click", async () => {
-      await api(`/api/alerts/${a.id}/resolve`, { method: "POST" });
-      loadAlerts();
-    });
-    list.appendChild(el);
+
+  listEl.innerHTML = "";
+  const severities = state.alertsFilter === "all" ? SEVERITY_ORDER : [state.alertsFilter];
+  for (const sev of severities) {
+    const group = filtered
+      .filter((a) => a.severity === sev)
+      .sort((a, b) => new Date(b.last_occurred_at) - new Date(a.last_occurred_at));
+    if (group.length === 0) continue;
+    if (state.alertsFilter === "all") {
+      const label = document.createElement("div");
+      label.className = "alerts-group-label";
+      label.textContent = `${SEVERITY_META[sev].label} (${group.length})`;
+      listEl.appendChild(label);
+    }
+    const box = document.createElement("div");
+    box.className = "alerts-page-list";
+    for (const a of group) box.appendChild(buildAlertItemEl(a));
+    listEl.appendChild(box);
   }
+}
+
+function buildAlertItemEl(a) {
+  const server = state.servers.find((s) => s.id === a.server_id);
+  const el = document.createElement("div");
+  el.className = "alert-item";
+  el.innerHTML = `
+    <div class="top">
+      <span class="pill ${healthClass(a.severity === 'critical' ? 'Critical' : a.severity === 'warning' ? 'Warning' : 'Unknown')}">${a.severity}</span>
+      <strong>${escapeHtml(server ? (server.display_name || server.hostname) : a.server_id)}</strong>
+    </div>
+    <div class="msg">${escapeHtml(a.message)}</div>
+    <div class="meta">${escapeHtml(a.category)} &middot; ${a.occurrence_count}x &middot; last ${timeAgoOrLocal(a.last_occurred_at)}</div>
+    <div class="alert-actions">
+      ${!a.acknowledged ? `<button class="btn-secondary ack-btn">Acknowledge</button>` : `<span class="meta">Acknowledged</span>`}
+      <button class="btn-secondary resolve-btn">Resolve</button>
+    </div>
+  `;
+  el.querySelector(".ack-btn")?.addEventListener("click", async () => {
+    await api(`/api/alerts/${a.id}/acknowledge`, { method: "POST", body: JSON.stringify({}) });
+    loadAlerts();
+  });
+  el.querySelector(".resolve-btn").addEventListener("click", async () => {
+    await api(`/api/alerts/${a.id}/resolve`, { method: "POST" });
+    loadAlerts();
+  });
+  if (server) {
+    el.style.cursor = "pointer";
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      selectServer(server.id);
+    });
+  }
+  return el;
 }
 
 // ---------------------------------------------------------------------
@@ -982,7 +1406,9 @@ function renderAlertsDrawer() {
 // ---------------------------------------------------------------------
 function wireAddServerModal() {
   const modal = $("#addServerModal");
-  $("#addServerBtn").addEventListener("click", () => modal.classList.add("open"));
+  // Note: the "Add server" button lives inside the dynamically-rendered
+  // Nodes view (see renderNodesView), not in the static page shell, so
+  // it's wired there instead of here.
   $("#cancelAddServer").addEventListener("click", () => modal.classList.remove("open"));
   $("#submitAddServer").addEventListener("click", async () => {
     const errorEl = $("#addServerError");
@@ -1022,18 +1448,26 @@ function wireSocket() {
   socket.on("connect", () => {
     $("#wsStatus").className = "pill pill-ok";
     $("#wsStatus").innerHTML = `<span class="dot" style="background:var(--ok)"></span> live`;
+    const fs = $("#footerStreamStatus");
+    fs.className = "footer-stream live";
+    fs.innerHTML = `<span class="dot"></span> Telemetry Streaming`;
     if (state.selectedServerId) socket.emit("subscribe_server", { server_id: state.selectedServerId });
   });
 
   socket.on("disconnect", () => {
     $("#wsStatus").className = "pill pill-crit";
     $("#wsStatus").innerHTML = `<span class="dot" style="background:var(--crit)"></span> disconnected`;
+    const fs = $("#footerStreamStatus");
+    fs.className = "footer-stream down";
+    fs.innerHTML = `<span class="dot"></span> Disconnected`;
   });
 
   socket.on("server_summary_update", (summary) => {
     const idx = state.servers.findIndex((s) => s.id === summary.id);
     if (idx >= 0) state.servers[idx] = summary; else state.servers.push(summary);
-    renderServerList();
+    renderNavCounts();
+    if (state.view === "nodes") updateNodesTable();
+    if (state.view === "overview") renderOverviewView();
     if (summary.id === state.selectedServerId) {
       const headerEl = $("#serverHeader");
       if (headerEl) renderHeader({ ...summary, redfish_service_root: null });
@@ -1061,9 +1495,13 @@ function wireSocket() {
       comps = payload.components || [];
     }
 
-    // Update the count badge
+    state.categoryComponents[category] = comps;
+    const realCompsNow = comps.filter((c) => c.odata_id !== "meta:unsupported");
+    const isUnsupportedNow = comps.length > 0 && realCompsNow.length === 0;
+
+    // Update the count badge on the grid tile
     const countEl = card.querySelector(".count");
-    if (countEl) countEl.textContent = comps.length;
+    if (countEl) countEl.textContent = isUnsupportedNow ? "–" : String(realCompsNow.length);
 
     // Update the health dot on the card header
     const worst = worstHealth(comps);
@@ -1072,14 +1510,13 @@ function wireSocket() {
       existingDot.style.background = healthDotColor(worst);
     }
 
-    // Only rebuild the body if the card is open
-    if (card.classList.contains("open")) {
-      const body = card.querySelector(".card-body");
-      // Save scroll position of the card body
+    // If this category's popup is currently open, refresh its contents live
+    if (state.openCategoryModal === category) {
+      const body = $("#categoryModalBody");
       const scrollTop = body.scrollTop;
       renderCategoryBody(body, category, comps);
-      // Restore scroll position
       body.scrollTop = scrollTop;
+      $("#categoryModalCount").textContent = realCompsNow.length ? `${realCompsNow.length} item${realCompsNow.length === 1 ? "" : "s"}` : "";
     }
   });
 
@@ -1097,26 +1534,16 @@ function wireSocket() {
 // ---------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------
-function wireDrawer() {
-  const overlay = $("#drawerOverlay");
-  const drawer = $("#alertsDrawer");
-  $("#alertsBtn").addEventListener("click", () => {
-    overlay.classList.add("open");
-    drawer.classList.add("open");
-  });
-  const close = () => { overlay.classList.remove("open"); drawer.classList.remove("open"); };
-  $("#closeDrawerBtn").addEventListener("click", close);
-  overlay.addEventListener("click", close);
-}
-
 document.addEventListener("DOMContentLoaded", async () => {
   wireAddServerModal();
   wireEditServerModal();
-  wireDrawer();
+  wireCategoryModal();
+  wireNav();
   wireSocket();
-  $("#serverSearch").addEventListener("input", renderServerList);
+  startClock();
 
   await loadServers();
   await loadAlerts();
+  setView("overview");
   setInterval(loadAlerts, 30000);
 });

@@ -458,7 +458,7 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if components:
             for cat, comp_list in components.items():
                 engine._upsert_components(server, cat, comp_list)
-                alert_engine.evaluate_components(db.session, str(server.id), cat, comp_list, app.config["REDFISH_CONFIG"])
+                alert_engine.evaluate_components(db.session, str(server.id), cat, comp_list, app.config["REDFISH_CONFIG"], server=server)
                 ws_events.emit_component_update(socketio, str(server.id), cat, [engine._component_dict(x) for x in comp_list])
 
         if readings:

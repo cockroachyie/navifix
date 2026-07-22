@@ -119,6 +119,15 @@ def build_app_config() -> AppConfig:
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
 
+    # ── Email ticket alerts (SMTP) ──────────────────────────────────────────
+    # Sends a ticket-style email for every newly-raised CRITICAL alert.
+    # Disabled until SMTP_USERNAME + SMTP_PASSWORD are set in .env - Gmail
+    # requires an App Password (2-Step Verification -> App Passwords), a
+    # normal account password will be rejected.
+    smtp_username = env.get("SMTP_USERNAME", "").strip()
+    smtp_password = env.get("SMTP_PASSWORD", "").strip()
+    smtp_from = env.get("SMTP_FROM", "").strip() or smtp_username
+
     # ── Build config object ────────────────────────────────────────────────
     cfg = AppConfig(
         # Flask
@@ -155,6 +164,15 @@ def build_app_config() -> AppConfig:
 
         # Alerts
         FALLBACK_TEMPERATURE_CRITICAL_C=_float(env.get("FALLBACK_TEMPERATURE_CRITICAL_C"), 85.0, "FALLBACK_TEMPERATURE_CRITICAL_C"),
+
+        # Email ticket alerts
+        SMTP_HOST=env.get("SMTP_HOST", ""),
+        SMTP_PORT=_int(env.get("SMTP_PORT"), 587, "SMTP_PORT"),
+        SMTP_USERNAME=smtp_username,
+        SMTP_PASSWORD=smtp_password,
+        SMTP_FROM=smtp_from,
+        ALERT_EMAIL_TO=env.get("ALERT_EMAIL_TO", ""),
+        SMTP_ENABLED=bool(smtp_username and smtp_password),
 
         # History
         SENSOR_HISTORY_RETENTION_DAYS=_int(env.get("SENSOR_HISTORY_RETENTION_DAYS"), 30, "SENSOR_HISTORY_RETENTION_DAYS"),
@@ -224,6 +242,7 @@ def _log_startup_summary(cfg: AppConfig):
         "  Max concurrent:     %s servers\n"
         "  Inventory refresh:  %ss\n"
         "  SocketIO mode:      %s\n"
+        "  Email alerts:       %s\n"
         "═══════════════════════════════════════════════════════",
         safe_db,
         "SET (44 chars)" if cfg.ENCRYPTION_KEY else "NOT SET (temp key)",
@@ -234,6 +253,8 @@ def _log_startup_summary(cfg: AppConfig):
         cfg.MAX_CONCURRENT_POLLS,
         cfg.INVENTORY_REFRESH_INTERVAL_SECONDS,
         cfg.SOCKETIO_ASYNC_MODE,
+        f"ENABLED (critical alerts -> {cfg.ALERT_EMAIL_TO})" if cfg.SMTP_ENABLED
+            else "DISABLED (set SMTP_USERNAME/SMTP_PASSWORD in .env)",
     )
 
 

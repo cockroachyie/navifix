@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, timedelta
 
 from database.models import Alert, AlertSeverity, ComponentCategory
+from alerts import notifier
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def _dedupe_key(server_id, category, source, condition) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _raise_or_bump(db_session, server_id, category, severity, message, source_property, condition):
+def _raise_or_bump(db_session, server_id, category, severity, message, source_property, condition, new_critical=None):
     key = _dedupe_key(server_id, category, source_property, condition)
     existing = (
         Alert.query.filter_by(server_id=server_id, dedupe_key=key, resolved=False).first()
@@ -58,6 +59,11 @@ def _raise_or_bump(db_session, server_id, category, severity, message, source_pr
     )
     db_session.add(alert)
     logger.info("New alert [%s/%s] %s: %s", server_id, category, severity.value, message)
+    # Only brand-new alerts trigger a ticket email - never a bump on an
+    # already-open alert, so a fan stuck in Critical for hours doesn't
+    # spam the inbox once per poll cycle.
+    if new_critical is not None and severity == AlertSeverity.CRITICAL:
+        new_critical.append(alert)
     return alert
 
 
@@ -73,10 +79,17 @@ def _auto_resolve_missing(db_session, server_id, category, still_present_keys):
             db_session.add(a)
 
 
-def evaluate_components(db_session, server_id, category: str, components: list[dict], config):
+def evaluate_components(db_session, server_id, category: str, components: list[dict], config, server=None):
     """components: list of the normalized dicts returned by a collector
-    (category, odata_id, name, health, state, raw_json)."""
+    (category, odata_id, name, health, state, raw_json).
+
+    `server` (the Server ORM row, optional) is only used to send ticket
+    emails for newly-raised critical alerts - pass it when you have it
+    handy (poller.py does); alert evaluation itself works fine without it,
+    it just means no email gets sent.
+    """
     still_present = set()
+    new_critical = []
 
     for c in components:
         health = c.get("health")
@@ -87,7 +100,7 @@ def evaluate_components(db_session, server_id, category: str, components: list[d
         name = c.get("name") or c.get("odata_id")
         message = f"{name} reported health '{health}'"
         condition = f"health={health}"
-        alert = _raise_or_bump(db_session, server_id, category, severity, message, c.get("odata_id"), condition)
+        alert = _raise_or_bump(db_session, server_id, category, severity, message, c.get("odata_id"), condition, new_critical)
         still_present.add(alert.dedupe_key)
 
         # Category-specific extra conditions beyond raw Status.Health.
@@ -97,7 +110,7 @@ def evaluate_components(db_session, server_id, category: str, components: list[d
                 cond = "failure_predicted"
                 a = _raise_or_bump(
                     db_session, server_id, category, AlertSeverity.CRITICAL,
-                    f"{name}: drive failure predicted (SMART)", c.get("odata_id"), cond,
+                    f"{name}: drive failure predicted (SMART)", c.get("odata_id"), cond, new_critical,
                 )
                 still_present.add(a.dedupe_key)
 
@@ -109,7 +122,7 @@ def evaluate_components(db_session, server_id, category: str, components: list[d
                 cond = "voltage_out_of_range"
                 a = _raise_or_bump(
                     db_session, server_id, category, AlertSeverity.CRITICAL,
-                    f"{name}: voltage {reading_v}V outside safe range", c.get("odata_id"), cond,
+                    f"{name}: voltage {reading_v}V outside safe range", c.get("odata_id"), cond, new_critical,
                 )
                 still_present.add(a.dedupe_key)
 
@@ -121,7 +134,7 @@ def evaluate_components(db_session, server_id, category: str, components: list[d
                 a = _raise_or_bump(
                     db_session, server_id, category, AlertSeverity.CRITICAL,
                     f"{name}: temperature {reading_c}C exceeds critical threshold {upper}C",
-                    c.get("odata_id"), cond,
+                    c.get("odata_id"), cond, new_critical,
                 )
                 still_present.add(a.dedupe_key)
 
@@ -148,10 +161,17 @@ def evaluate_components(db_session, server_id, category: str, components: list[d
     _auto_resolve_missing(db_session, server_id, category, still_present)
     db_session.commit()
 
+    for alert in new_critical:
+        notifier.send_critical_alert_email(config, alert, server)
 
-def raise_connection_alert(db_session, server_id, severity: AlertSeverity, message: str, condition: str):
-    a = _raise_or_bump(db_session, server_id, "connection", severity, message, "bmc_connection", condition)
+
+def raise_connection_alert(db_session, server_id, severity: AlertSeverity, message: str, condition: str, config=None, server=None):
+    new_critical = []
+    a = _raise_or_bump(db_session, server_id, "connection", severity, message, "bmc_connection", condition, new_critical)
     db_session.commit()
+    if config is not None:
+        for alert in new_critical:
+            notifier.send_critical_alert_email(config, alert, server)
     return a
 
 

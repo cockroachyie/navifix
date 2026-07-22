@@ -27,44 +27,37 @@
       Navigator Systems
     </div>
     <div class="topbar-actions">
-      <button class="icon-btn" id="alertsBtn" title="Alerts">
-        <i class="fa-solid fa-bell"></i>
-        <span class="badge" id="alertsBadge" style="display:none;">0</span>
-      </button>
       <span id="wsStatus" class="pill pill-unknown"><span class="dot"></span> connecting</span>
     </div>
   </div>
 
   <!-- Sidebar -->
   <div class="sidebar">
-    <div class="sidebar-search">
-      <input type="text" id="serverSearch" placeholder="Search servers..." autocomplete="off">
-      <button class="btn-primary" id="addServerBtn" title="Add server"><i class="fa-solid fa-plus"></i></button>
-    </div>
-    <div class="server-list" id="serverList">
-      <div class="sidebar-empty">No servers yet. Click <b>+</b> to add one.</div>
+    <nav class="nav-list" id="navList">
+      <div class="nav-item" data-view="overview">
+        <i class="fa-solid fa-gauge-high"></i>
+        <span>Fleet Overview</span>
+      </div>
+      <div class="nav-item" data-view="nodes">
+        <i class="fa-solid fa-server"></i>
+        <span>Nodes</span>
+        <span class="nav-count" id="navNodeCount"></span>
+      </div>
+      <div class="nav-item" data-view="alerts">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span>Alerts</span>
+        <span class="nav-count nav-count-alert" id="navAlertCount" style="display:none;"></span>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="footer-row"><span class="label">Sys Time (IST)</span><span class="value" id="sysTime">--:--:--</span></div>
+      <div class="footer-stream" id="footerStreamStatus"><span class="dot"></span> connecting</div>
     </div>
   </div>
 
   <!-- Main content -->
-  <div class="main" id="main">
-    <div class="no-server-selected">
-      <i class="fa-solid fa-server" style="font-size: 40px; color: var(--accent); opacity:.4;"></i>
-      <div style="margin-top:12px; font-size:15px; font-weight:600;">Select a server</div>
-      <div style="font-size:12px; color:var(--text-faint);">Choose a server from the sidebar to view its hardware status</div>
-    </div>
-  </div>
+  <div class="main" id="main"></div>
 
-</div>
-
-<!-- Alerts drawer overlay -->
-<div class="drawer-overlay" id="drawerOverlay"></div>
-<div class="drawer" id="alertsDrawer">
-  <div class="drawer-header">
-    <h2><i class="fa-solid fa-triangle-exclamation" style="color:var(--warn);margin-right:8px;"></i>Alerts</h2>
-    <button class="icon-btn" id="closeDrawerBtn"><i class="fa-solid fa-xmark"></i></button>
-  </div>
-  <div class="drawer-body" id="alertsList"></div>
 </div>
 
 <!-- Add server modal -->
@@ -146,6 +139,21 @@
   </div>
 </div>
 
+
+<!-- Category detail popup (opened by clicking a category card - own scroll, doesn't affect grid layout) -->
+<div class="modal-overlay" id="categoryModalOverlay">
+  <div class="modal detail-modal">
+    <div class="detail-modal-header">
+      <div class="detail-modal-title">
+        <i class="fa-solid" id="categoryModalIcon"></i>
+        <span id="categoryModalTitle"></span>
+        <span class="count" id="categoryModalCount"></span>
+      </div>
+      <button class="icon-btn" id="categoryModalClose"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="detail-modal-body" id="categoryModalBody"></div>
+  </div>
+</div>
 
 <!-- Toast notifications -->
 <div class="toast-container" id="toastContainer"></div>

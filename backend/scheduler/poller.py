@@ -199,6 +199,7 @@ class PollingEngine:
             alert_engine.raise_connection_alert(
                 db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
                 f"Authentication failed for {server.hostname} ({server.ip_address})", "auth_failed",
+                config=self.config, server=server,
             )
             return
         except RedfishUnreachableError as exc:
@@ -206,6 +207,7 @@ class PollingEngine:
             alert_engine.raise_connection_alert(
                 db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
                 f"{server.hostname} ({server.ip_address}) unreachable: {exc}", "unreachable",
+                config=self.config, server=server,
             )
             return
 
@@ -221,7 +223,7 @@ class PollingEngine:
                 continue
             self._upsert_components(server, category_name, components)
             self._insert_readings(server, readings)
-            alert_engine.evaluate_components(db.session, str(server.id), category_name, components, self.config)
+            alert_engine.evaluate_components(db.session, str(server.id), category_name, components, self.config, server=server)
             ws_events.emit_component_update(
                 self.socketio, str(server.id), category_name,
                 [self._component_dict(x) for x in components],
