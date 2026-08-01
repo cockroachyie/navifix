@@ -14,7 +14,7 @@ FirmwareVersion, Manufacturer, Model, PartNumber, SerialNumber, Status,
 Redundancy, and the system-level wattage readings (PowerConsumedWatts,
 AveragePowerUsedWatts, MaxPowerUsedWatts, MinPowerUsedWatts).
 """
-from .common import component, reading, collection_members
+from .common import component, reading, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -88,4 +88,10 @@ def collect(client, server, topology):
                             readings.append(reading("power_consumption", "System Power", consumed, "W"))
 
     readings = [r for r in readings if r]
+
+    # Emit unsupported marker when no PSUs were collected from any path.
+    # iDRAC 8 can expose an empty or inaccessible PowerSupplies[] array.
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.POWER_SUPPLY))
+
     return components, readings

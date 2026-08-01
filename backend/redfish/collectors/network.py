@@ -14,7 +14,7 @@ Every NIC exposed gets its own Component row. The raw_json contains ALL
 fields: MACAddress, SpeedMbps, LinkStatus, AutoNeg, FullDuplex, IPv4/IPv6
 addresses, VLANs, MTU, PermanentMACAddress, FirmwareVersion, and OEM.
 """
-from .common import component, collection_members
+from .common import component, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -87,5 +87,9 @@ def collect(client, server, topology):
         if eth_uri:
             for nic in collection_members(client, eth_uri):
                 add_nic(nic)
+
+    # Emit unsupported marker when no NICs were found from any path.
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.NETWORK_INTERFACE))
 
     return components, []

@@ -8,11 +8,17 @@ repeating boilerplate for pulling Status.Health/State out of a resource.
 
 
 def status_health(resource: dict) -> str | None:
-    return (resource.get("Status") or {}).get("Health")
+    status = resource.get("Status")
+    if isinstance(status, dict):
+        return status.get("Health")
+    return None
 
 
 def status_state(resource: dict) -> str | None:
-    return (resource.get("Status") or {}).get("State")
+    status = resource.get("Status")
+    if isinstance(status, dict):
+        return status.get("State")
+    return None
 
 
 def component(category, odata_id, name, raw_json, location=None, health=None, state=None):
@@ -43,11 +49,18 @@ def collection_members(client, collection_uri):
     """GET a Redfish collection and return the list of full member
     resources (not just their URIs) - this is the shape almost every
     collector needs."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     if not collection_uri:
         return []
+    
+    logger.info("Fetching collection: %s", collection_uri)
     coll = client.get(collection_uri)
     if not coll:
+        logger.info("Collection missing or empty: %s", collection_uri)
         return []
+    
     members = []
     
     while coll:
@@ -57,7 +70,12 @@ def collection_members(client, collection_uri):
                 continue
             body = client.get(uri)
             if body:
+                logger.info("Endpoint URL: %s | Status: OK | Exists: True", uri)
+                if "@odata.id" not in body:
+                    body["@odata.id"] = uri
                 members.append(body)
+            else:
+                logger.warning("Endpoint URL: %s | Status: FAILED | Exists: False", uri)
                 
         next_link = coll.get("Members@odata.nextLink")
         if next_link:

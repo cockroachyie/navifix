@@ -52,13 +52,31 @@ class RedfishClient:
     def _request(self, method: str, path: str, json_body: dict | None = None) -> dict | None:
         attempts = 0
         last_exc_str = ""
+        
+        # httpx internally parses the URI and treats '%23' as a literal '#' fragment
+        # delimiter, silently truncating everything after it. Dell uses '%23' heavily
+        # in their URIs (e.g. ...%23DIMMSLOTA1). We double-encode it to '%2523' so
+        # httpx sends the literal '%23' over the wire.
+        safe_path = path.replace("%23", "%2523")
+        
         while attempts < self.config.REDFISH_MAX_RETRIES:
             attempts += 1
             try:
                 client = self.session.get_http_client()
-                resp = client.request(method, path, json=json_body)
+                resp = client.request(method, safe_path, json=json_body)
 
                 if resp.status_code == 404:
+                    return None
+
+                if resp.status_code == 501:
+                    # HTTP 501 Not Implemented: the BMC firmware does not support
+                    # this endpoint (common on Dell iDRAC 8 for newer schema paths).
+                    # Treat as "resource not available" — same as 404 — rather than
+                    # a server error, to avoid triggering retry backoff storms.
+                    logger.debug(
+                        "HTTP 501 (Not Implemented) from %s%s — endpoint unsupported on this firmware, skipping",
+                        self.session.base_url, path,
+                    )
                     return None
 
                 if resp.status_code == 401:
@@ -70,7 +88,24 @@ class RedfishClient:
                     continue
 
                 if resp.status_code >= 500:
-                    raise RedfishUnreachableError(f"{resp.status_code} from {path}")
+                    # A 5xx from a specific endpoint means that BMC resource is
+                    # broken or unsupported on this firmware — NOT that the whole
+                    # BMC is unreachable. Raising RedfishUnreachableError here
+                    # would invalidate the session and force re-auth on every
+                    # retry (observed on Lenovo XCC /BootSettings/* endpoints).
+                    # Instead, log and retry without session invalidation; after
+                    # exhausting retries return None (same as 404) so the
+                    # collector skips this resource gracefully.
+                    last_exc_str = f"HTTP {resp.status_code} from {path}"
+                    wait = self.config.REDFISH_RETRY_BACKOFF_SECONDS * attempts
+                    logger.warning(
+                        "HTTP %s from %s%s — endpoint may be unsupported on this firmware "
+                        "(%s/%s), retrying in %.1fs",
+                        resp.status_code, self.session.base_url, path,
+                        attempts, self.config.REDFISH_MAX_RETRIES, wait,
+                    )
+                    time.sleep(wait)
+                    continue
 
                 # Any other 4xx (403 Forbidden, 405 Method Not Allowed, etc.)
                 # means "resource not accessible to this account" — return None
@@ -88,13 +123,12 @@ class RedfishClient:
                     return {}
                 return resp.json()
 
-            except (httpx.RequestError, RedfishUnreachableError) as exc:
+            except httpx.RequestError as exc:
+                # Only true network-level failures (TCP, DNS, TLS) should
+                # invalidate the session.  BMC-side HTTP errors are handled
+                # above without touching the session.
                 self.session.invalidate()
-                if isinstance(exc, RedfishUnreachableError):
-                    last_exc_str = str(exc)
-                else:
-                    last_exc_str = format_httpx_exception(exc)
-                    
+                last_exc_str = format_httpx_exception(exc)
                 wait = self.config.REDFISH_RETRY_BACKOFF_SECONDS * attempts
                 logger.warning(
                     "Redfish request failed (%s/%s) for %s%s: %s - retrying in %.1fs",
@@ -104,6 +138,15 @@ class RedfishClient:
             except RedfishAuthError:
                 raise
 
+        # Exhausted retries — if the last error was a 5xx, treat as 'resource
+        # unavailable' rather than 'BMC unreachable' so one bad endpoint does
+        # not abort the entire poll cycle for this server.
+        if last_exc_str.startswith("HTTP 5"):
+            logger.warning(
+                "Giving up on %s%s after %s retries (persistent 5xx) — skipping resource",
+                self.session.base_url, path, self.config.REDFISH_MAX_RETRIES,
+            )
+            return None
         raise RedfishUnreachableError(
             f"Exhausted retries reaching {self.session.base_url}{path}: {last_exc_str}"
         )
@@ -118,25 +161,48 @@ class RedfishClient:
         """
         attempts = 0
         last_exc_str = ""
+        safe_path = path.replace("%23", "%2523")
+        
         while attempts < self.config.REDFISH_MAX_RETRIES:
             attempts += 1
             try:
                 client = self.session.get_http_client()
-                resp = client.request(method, path, json=json_body)
+                resp = client.request(method, safe_path, json=json_body)
 
                 if resp.status_code == 401:
                     logger.info("401 from %s on %s - reauthenticating", self.session.base_url, path)
                     self.session.invalidate()
                     continue
 
+                if resp.status_code == 501:
+                    # Same as in _request(): 501 means the endpoint is unsupported
+                    # on this firmware — return None rather than raising / retrying.
+                    logger.debug(
+                        "HTTP 501 (Not Implemented) from %s%s — endpoint unsupported on this firmware, skipping",
+                        self.session.base_url, path,
+                    )
+                    return None
+
                 if resp.status_code >= 500:
-                    raise RedfishUnreachableError(f"{resp.status_code} from {path}")
+                    # Same logic as _request(): 5xx on a specific endpoint means
+                    # the resource is broken/unsupported, not the whole BMC.
+                    # Do not invalidate the session; just retry then return None.
+                    last_exc_str = f"HTTP {resp.status_code} from {path}"
+                    wait = self.config.REDFISH_RETRY_BACKOFF_SECONDS * attempts
+                    logger.warning(
+                        "HTTP %s from %s%s — endpoint may be unsupported (%s/%s), retrying in %.1fs",
+                        resp.status_code, self.session.base_url, path,
+                        attempts, self.config.REDFISH_MAX_RETRIES, wait,
+                    )
+                    time.sleep(wait)
+                    continue
 
                 return resp
 
-            except (httpx.RequestError, RedfishUnreachableError) as exc:
+            except httpx.RequestError as exc:
+                # Only network-level failures invalidate the session.
                 self.session.invalidate()
-                last_exc_str = str(exc) if isinstance(exc, RedfishUnreachableError) else format_httpx_exception(exc)
+                last_exc_str = format_httpx_exception(exc)
                 wait = self.config.REDFISH_RETRY_BACKOFF_SECONDS * attempts
                 logger.warning(
                     "Redfish request failed (%s/%s) for %s%s: %s - retrying in %.1fs",
@@ -147,6 +213,12 @@ class RedfishClient:
             except RedfishAuthError:
                 raise
 
+        if last_exc_str.startswith("HTTP 5"):
+            logger.warning(
+                "Giving up on %s%s after %s retries (persistent 5xx) — skipping resource",
+                self.session.base_url, path, self.config.REDFISH_MAX_RETRIES,
+            )
+            return None
         raise RedfishUnreachableError(
             f"Exhausted retries reaching {self.session.base_url}{path}: {last_exc_str}"
         )

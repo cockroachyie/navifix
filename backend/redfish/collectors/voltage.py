@@ -5,7 +5,10 @@ Redfish resources consumed
 ---------------------------
 - Chassis/{id}/Thermal -> Voltages[] (yes, Voltages are embedded in the
   Thermal resource in the 2020.x schema — a historical quirk of Redfish)
-- Chassis/{id}/Power -> Voltages[] (some BMCs also report voltages here)
+- Chassis/{id}/Power -> Voltages[] (standard; most BMCs report voltages here)
+- Chassis/{id}/Power -> Oem.Hp.Voltages[] / Oem.Hpe.Voltages[]
+  (HPE iLO 4 OEM supplement — some firmware nests additional rails here;
+   deduplicated by Name to avoid double-counting rails in both locations)
 - Chassis/{id}/EnvironmentMetrics (2021.x+): PowerWatts, Voltages
 
 Captures every voltage rail: ReadingVolts, UpperThresholdCritical,
@@ -52,6 +55,31 @@ def collect(client, server, topology):
                             "Status": ps.get("Status", {"Health": "OK", "State": "Enabled"}),
                             "PhysicalContext": "PowerSupply"
                         })
+
+                # ── HPE OEM voltage supplement (iLO 4 / some iLO 5) ──────────
+                # Some HPE iLO 4 firmware reports additional voltage rails
+                # under Power.Oem.Hp.Voltages or Power.Oem.Hpe.Voltages
+                # (e.g. IRM rail sensors not in the top-level Voltages[]).
+                # We merge these in and deduplicate by sensor Name to avoid
+                # double-counting rails that appear in both places.
+                oem = body.get("Oem") or {}
+                hp_block = oem.get("Hpe") or oem.get("Hp") or {}
+                oem_voltages = hp_block.get("Voltages") or []
+                if oem_voltages:
+                    existing_names = {v.get("Name") for v in voltage_items if v.get("Name")}
+                    new_count = 0
+                    for v in oem_voltages:
+                        if v.get("Name") not in existing_names:
+                            voltage_items.append(v)
+                            existing_names.add(v.get("Name"))
+                            new_count += 1
+                    if new_count:
+                        import logging as _logging
+                        _logging.getLogger(__name__).debug(
+                            "HPE OEM voltage supplement: added %d extra rail(s) "
+                            "from Power.Oem.Hp/Hpe.Voltages for chassis %s",
+                            new_count, chassis_uri,
+                        )
 
         # ── 2021.x EnvironmentMetrics ───────────────────────────────────
         env_uri = links.get("environment_metrics")

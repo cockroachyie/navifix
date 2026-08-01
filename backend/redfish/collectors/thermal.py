@@ -14,7 +14,7 @@ UpperThresholdNonCritical, LowerThresholdCritical, LowerThresholdFatal,
 LowerThresholdNonCritical, MaxReadingRangeTemp, MinReadingRangeTemp,
 PhysicalContext (location), SensorNumber, Status.
 """
-from .common import component, reading, collection_members
+from .common import component, reading, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -75,4 +75,10 @@ def collect(client, server, topology):
                 readings.append(reading("temperature", name, temp, "Cel"))
 
     readings = [r for r in readings if r]
+
+    # Emit unsupported marker when no thermal sensors were found from any path.
+    # iDRAC 8 may have an empty Temperatures[] array, causing a blank card.
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.THERMAL_SENSOR))
+
     return components, readings
