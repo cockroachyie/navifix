@@ -42,11 +42,9 @@ function Assert-Command([string]$Cmd, [string]$InstallHint) {
 Write-Step "Pre-flight checks"
 
 Assert-Command "python"     "Install Python 3.11+ from https://python.org"
-Assert-Command "pyinstaller" "Run: pip install pyinstaller"
 Assert-Command "iscc"       "Install Inno Setup 6+ from https://jrsoftware.org/isinfo.php and add to PATH"
 
 Write-Host "  ✓ Python:      $(python --version)"      -ForegroundColor Green
-Write-Host "  ✓ PyInstaller: $(pyinstaller --version)" -ForegroundColor Green
 
 # ── Update version in setup.iss ───────────────────────────────────────────────
 Write-Step "Setting version to $Version"

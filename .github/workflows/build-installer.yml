@@ -21,8 +21,11 @@ jobs:
 
       - name: Install Inno Setup
         run: |
-          choco install innosetup --yes
-          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+          choco install innosetup --yes --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Pre-install Python build tools
+        run: pip install pyinstaller Pillow --quiet
 
       - name: Extract version from tag
         id: version
@@ -35,6 +38,7 @@ jobs:
       - name: Build NaviFix installer
         run: |
           .\installer\build.ps1 -Version "$env:VERSION"
+
 
       - name: Upload installer as artifact
         uses: actions/upload-artifact@v4
