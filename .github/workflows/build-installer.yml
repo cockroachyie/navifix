@@ -1,0 +1,63 @@
+name: Build NaviFix Installer
+
+on:
+  push:
+    tags:
+      - 'v*'          # triggers on:  git tag v1.0.0 && git push --tags
+  workflow_dispatch:  # allows manual trigger from GitHub Actions UI
+
+jobs:
+  build:
+    runs-on: windows-latest   # free Windows runner on GitHub
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --yes
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+          echo "Version: $version"
+
+      - name: Build NaviFix installer
+        run: |
+          .\installer\build.ps1 -Version "$env:VERSION"
+
+      - name: Upload installer as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NaviFix-${{ env.VERSION }}-setup
+          path: installer/dist/NaviFix-${{ env.VERSION }}-setup.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: NaviFix v${{ env.VERSION }}
+          body: |
+            ## NaviFix v${{ env.VERSION }}
+
+            ### Installation
+            1. Download `NaviFix-${{ env.VERSION }}-setup.exe` below
+            2. Run it and follow the installer steps
+            3. Docker Desktop is required — the installer will guide you if it's missing
+
+            ### What's new
+            See commit history for changes in this release.
+          files: |
+            installer/dist/NaviFix-${{ env.VERSION }}-setup.exe
+          draft: false
+          prerelease: false

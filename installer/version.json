@@ -1,0 +1,6 @@
+{
+  "version": "1.0.0",
+  "release_notes": "Initial release of NaviFix.",
+  "download_url": "https://your-org.github.io/navifix/releases/NaviFix-1.0.0-setup.exe",
+  "mandatory": false
+}

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NaviFix — Starting…</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0b0f1a;
+      --surface:   #111827;
+      --border:    #1f2d45;
+      --accent:    #3b82f6;
+      --accent2:   #06b6d4;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --success:   #22c55e;
+      --error:     #ef4444;
+      --radius:    16px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      font-family: 'Inter', system-ui, sans-serif;
+      color: var(--text);
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ── Animated background grid ─────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px;
+      opacity: 0.4;
+      animation: gridPan 20s linear infinite;
+    }
+
+    @keyframes gridPan {
+      from { background-position: 0 0, 0 0; }
+      to   { background-position: 40px 40px, 40px 40px; }
+    }
+
+    /* ── Centre container ─────────────────────────────────────────────── */
+    .splash {
+      position: relative;
+      z-index: 1;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      padding: 40px;
+    }
+
+    /* ── Logo ring ────────────────────────────────────────────────────── */
+    .logo-ring {
+      position: relative;
+      width: 100px;
+      height: 100px;
+    }
+
+    .logo-ring svg.ring {
+      position: absolute; inset: 0;
+      animation: spin 2s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .logo-ring .icon {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px;
+    }
+
+    /* ── Text ─────────────────────────────────────────────────────────── */
+    .app-name {
+      font-size: 38px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .app-tagline {
+      font-size: 14px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    /* ── Progress bar ─────────────────────────────────────────────────── */
+    .progress-wrap {
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 999px;
+      transition: width 0.4s ease;
+      animation: pulse 1.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse {
+      from { opacity: 0.7; }
+      to   { opacity: 1.0; }
+    }
+
+    .status-text {
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      min-height: 20px;
+      transition: color 0.3s;
+    }
+
+    .status-text.error {
+      color: var(--error);
+    }
+
+    /* ── Version badge ────────────────────────────────────────────────── */
+    .version {
+      position: fixed;
+      bottom: 20px;
+      right: 24px;
+      font-size: 11px;
+      color: var(--muted);
+      opacity: 0.5;
+    }
+
+    /* ── Dots animation ───────────────────────────────────────────────── */
+    .dots::after {
+      content: '';
+      animation: dots 1.4s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0%   { content: '';    }
+      25%  { content: '.';   }
+      50%  { content: '..';  }
+      75%  { content: '...'; }
+    }
+  </style>
+</head>
+<body>
+  <div class="splash">
+
+    <!-- Logo ring -->
+    <div class="logo-ring">
+      <svg class="ring" viewBox="0 0 100 100" fill="none">
+        <circle cx="50" cy="50" r="44" stroke="#1f2d45" stroke-width="4"/>
+        <circle cx="50" cy="50" r="44"
+          stroke="url(#grad)" stroke-width="4"
+          stroke-dasharray="60 220" stroke-linecap="round"/>
+        <defs>
+          <linearGradient id="grad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#3b82f6"/>
+            <stop offset="1" stop-color="#06b6d4"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <div class="icon">🛰️</div>
+    </div>
+
+    <!-- App name -->
+    <div style="text-align:center">
+      <div class="app-name">NaviFix</div>
+      <div class="app-tagline">Network Fleet Monitor</div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-wrap">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="bar"></div>
+      </div>
+      <div class="status-text" id="status">
+        Starting services<span class="dots"></span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="version">v1.0.0</div>
+
+  <script>
+    const MAX_WAIT = 120; // must match Python HEALTH_TIMEOUT
+    const bar = document.getElementById('bar');
+    const statusEl = document.getElementById('status');
+
+    /** Called by Python wait_for_backend() via evaluate_js */
+    function updateStatus(elapsed, message) {
+      const pct = Math.min((elapsed / MAX_WAIT) * 100, 95);
+      bar.style.width = pct + '%';
+      statusEl.textContent = message;
+      statusEl.classList.remove('error');
+    }
+
+    /** Called by Python on timeout */
+    function showError(message) {
+      bar.style.width = '100%';
+      bar.style.background = '#ef4444';
+      bar.style.animation = 'none';
+      statusEl.textContent = message;
+      statusEl.classList.add('error');
+    }
+  </script>
+</body>
+</html>
