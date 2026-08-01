@@ -65,9 +65,9 @@ Write-Host "  ✓ Version set to $Version" -ForegroundColor Green
 # ── Install Python deps ───────────────────────────────────────────────────────
 Write-Step "Installing Python dependencies"
 
-pip install -r (Join-Path $ScriptDir "app\requirements.txt")  -q
-pip install -r (Join-Path $ScriptDir "tray\requirements.txt") -q
-pip install pyinstaller Pillow -q
+python -m pip install -r (Join-Path $ScriptDir "app\requirements.txt")  -q
+python -m pip install -r (Join-Path $ScriptDir "tray\requirements.txt") -q
+python -m pip install pyinstaller Pillow -q
 
 Write-Host "  ✓ Dependencies installed" -ForegroundColor Green
 
@@ -82,7 +82,7 @@ Write-Host "  ✓ Assets ready" -ForegroundColor Green
 if (-not $SkipApp) {
     Write-Step "Building NaviFixApp.exe"
 
-    pyinstaller `
+    python -m PyInstaller `
         --name "NaviFixApp" `
         --onedir `
         --windowed `
@@ -107,7 +107,7 @@ if (-not $SkipApp) {
 if (-not $SkipTray) {
     Write-Step "Building NaviFixTray.exe"
 
-    pyinstaller `
+    python -m PyInstaller `
         --name "NaviFixTray" `
         --onedir `
         --windowed `
