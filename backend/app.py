@@ -189,6 +189,10 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if Server.query.filter_by(ip_address=data["ip_address"]).first():
             return jsonify({"error": "A server with this IP address already exists"}), 409
 
+        management_protocol = data.get("management_protocol", "redfish")
+        if management_protocol not in ["redfish", "ilo2"]:
+            return jsonify({"error": "Invalid management protocol"}), 400
+
         cipher = get_cipher(app.config)
         server = Server(
             hostname=data["hostname"],
@@ -202,7 +206,8 @@ def _register_routes(app: Flask, socketio: SocketIO):
             agent_id=agent_id,
             customer_name=data.get("customer_name"),
             customer_location=data.get("customer_location"),
-            maintenance_records=data.get("maintenance_records")
+            maintenance_records=data.get("maintenance_records"),
+            management_protocol=management_protocol
         )
         db.session.add(server)
         db.session.commit()
@@ -226,6 +231,11 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if "customer_name" in data:         server.customer_name = data["customer_name"]
         if "customer_location" in data:     server.customer_location = data["customer_location"]
         if "maintenance_records" in data:   server.maintenance_records = data["maintenance_records"]
+        if "management_protocol" in data:
+            val = data["management_protocol"]
+            if val not in ["redfish", "ilo2"]:
+                return jsonify({"error": "Invalid management protocol"}), 400
+            server.management_protocol = val
         if "site_id" in data:
             if data["site_id"]:
                 try:

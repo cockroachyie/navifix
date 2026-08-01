@@ -50,6 +50,7 @@ services:
     # (DATABASE_URL must use the service name "db", not "localhost")
     environment:
       DATABASE_URL: postgresql://redfish:redfish@db:5432/redfishmonitor
+      OPENSSL_CONF: /app/openssl_legacy.cnf
 
     # Mount source so code changes take effect without rebuild
     volumes:

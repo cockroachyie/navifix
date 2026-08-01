@@ -188,31 +188,63 @@ class PollingEngine:
             ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
             return
 
-        base_url = f"https://{server.ip_address}"
-        redfish_session = self.session_manager.get_session(server.id, base_url, server.username, password)
-        client = RedfishClient(redfish_session, self.config)
+        if server.management_protocol == "ilo2":
+            from redfish.ilo2_client import ILO2Client
+            client = ILO2Client(server.ip_address, server.username, password, self.config)
+            topology = {
+                "service_root": {"RedfishVersion": "1.0.0"},
+                "systems": ["/redfish/v1/Systems/1"],
+                "chassis": ["/redfish/v1/Chassis/1"],
+                "managers": ["/redfish/v1/Managers/1"],
+                "per_system": {
+                    "/redfish/v1/Systems/1": {
+                        "processors": "/redfish/v1/Systems/1/Processors",
+                        "memory": "/redfish/v1/Systems/1/Memory",
+                        "storage": "/redfish/v1/Systems/1/Storage",
+                        "ethernet_interfaces": "/redfish/v1/Systems/1/EthernetInterfaces",
+                        "log_services": "/redfish/v1/Systems/1/LogServices",
+                    }
+                },
+                "per_chassis": {
+                    "/redfish/v1/Chassis/1": {
+                        "power": "/redfish/v1/Chassis/1/Power",
+                        "thermal": "/redfish/v1/Chassis/1/Thermal",
+                    }
+                },
+                "per_manager": {
+                    "/redfish/v1/Managers/1": {
+                        "ethernet_interfaces": "/redfish/v1/Managers/1/EthernetInterfaces"
+                    }
+                }
+            }
+            alert_engine.resolve_connection_alerts(db.session, server.id, "auth_failed")
+            alert_engine.resolve_connection_alerts(db.session, server.id, "unreachable")
+        else:
+            base_url = f"https://{server.ip_address}"
+            redfish_session = self.session_manager.get_session(server.id, base_url, server.username, password)
+            client = RedfishClient(redfish_session, self.config)
 
-        try:
-            topology = self._get_topology(client, server)
-        except RedfishAuthError:
-            self._mark_connection(server, ConnectionStatus.AUTH_FAILED, "Authentication failed")
-            alert_engine.raise_connection_alert(
-                db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
-                f"Authentication failed for {server.hostname} ({server.ip_address})", "auth_failed",
-                config=self.config, server=server,
-            )
-            return
-        except RedfishUnreachableError as exc:
-            self._mark_connection(server, ConnectionStatus.UNREACHABLE, str(exc))
-            alert_engine.raise_connection_alert(
-                db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
-                f"{server.hostname} ({server.ip_address}) unreachable: {exc}", "unreachable",
-                config=self.config, server=server,
-            )
-            return
+            try:
+                topology = self._get_topology(client, server)
+            except RedfishAuthError:
+                self._mark_connection(server, ConnectionStatus.AUTH_FAILED, "Authentication failed")
+                alert_engine.raise_connection_alert(
+                    db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
+                    f"Authentication failed for {server.hostname} ({server.ip_address})", "auth_failed",
+                    config=self.config, server=server,
+                )
+                return
+            except RedfishUnreachableError as exc:
+                self._mark_connection(server, ConnectionStatus.UNREACHABLE, str(exc))
+                alert_engine.raise_connection_alert(
+                    db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
+                    f"{server.hostname} ({server.ip_address}) unreachable: {exc}", "unreachable",
+                    config=self.config, server=server,
+                )
+                return
 
-        alert_engine.resolve_connection_alerts(db.session, server.id, "auth_failed")
-        alert_engine.resolve_connection_alerts(db.session, server.id, "unreachable")
+            alert_engine.resolve_connection_alerts(db.session, server.id, "auth_failed")
+            alert_engine.resolve_connection_alerts(db.session, server.id, "unreachable")
 
         # -- run every category collector ----------------------------------
         for category_name, collector_module in COLLECTOR_REGISTRY.items():

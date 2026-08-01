@@ -193,6 +193,7 @@ class Server(db.Model):
     customer_name   = Column(String(255), nullable=True)
     customer_location = Column(String(255), nullable=True)
     maintenance_records = Column(Text, nullable=True)
+    management_protocol = Column(String(50), default="redfish", nullable=False)
 
     # ── BMC credentials (optional for agent-polled servers) ─────────────
     username           = Column(String(128), nullable=True)
@@ -259,6 +260,7 @@ class Server(db.Model):
             "customer_name": self.customer_name,
             "customer_location": self.customer_location,
             "maintenance_records": self.maintenance_records,
+            "management_protocol": self.management_protocol,
         }
 
     def to_dict(self):
