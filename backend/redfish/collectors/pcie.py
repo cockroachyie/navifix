@@ -16,7 +16,7 @@ HBA, etc.), Manufacturer, DeviceId, VendorId, SubsystemId, SubsystemVendorId,
 ClassCode, FunctionId, PCIeInterface (PCIeType, MaxPCIeType, LanesInUse,
 MaxLanes), FirmwareVersion, Status, and any OEM extensions.
 """
-from .common import component, collection_members
+from .common import component, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -119,5 +119,9 @@ def collect(client, server, topology):
                     components.append(component(
                         ComponentCategory.PCIE_DEVICE, cable_uri, cable_name, cable,
                     ))
+
+    # Emit unsupported marker when no PCIe devices were found.
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.PCIE_DEVICE))
 
     return components, []

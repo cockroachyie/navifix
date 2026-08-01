@@ -13,6 +13,40 @@ iLO, Lenovo XClarity Controller, Supermicro BMC, or any other
 Redfish-conformant implementation - including future ones we've never
 tested against.
 
+iDRAC 6 / 7 compatibility additions (non-breaking)
+----------------------------------------------------
+After the standard link-following pass, we run an inline-summary
+extractor for each system body.  iDRAC 7 (Redfish 1.0.x) frequently
+exposes ``ProcessorSummary`` and ``MemorySummary`` as inline objects on
+the ComputerSystem body **instead of** collection links.  When
+``processors`` / ``memory`` links are absent, the extractor stores these
+summaries under ``per_system[uri]["processor_summary"]`` /
+``per_system[uri]["memory_summary"]`` so that the processor and memory
+collectors can synthesize at least one component from the summary data.
+
+HPE iLO 4 compatibility additions (non-breaking)
+-------------------------------------------------
+HPE iLO 4 (Gen9, Redfish 1.0.x) does not expose storage through the
+standard ``Systems/{id}/Storage`` collection.  Instead, it advertises a
+proprietary SmartStorage link inside the HPE OEM block of the
+ComputerSystem body::
+
+    Oem.Hp.SmartStorage.@odata.id  (early iLO 4 firmware, pre-rebrand)
+    Oem.Hpe.SmartStorage.@odata.id (iLO 4 post-rebrand, iLO 5)
+
+When the standard ``storage`` and ``simple_storage`` links are absent,
+we extract this OEM link and store it under ``per_system[uri]["storage_hpe"]``
+so that ``storage.py`` and ``battery.py`` can reach it without any
+hardcoded URI construction.
+
+Similarly, some iLO 4 firmware exposes a ``Memory`` link inside the OEM
+block when the standard ``Memory`` top-level link is absent.  We extract
+this and store it as the standard ``memory`` key so the existing memory
+collector can consume it without modification.
+
+These keys are **additive** — all other existing topology output is
+completely unchanged.
+
 Output shape
 ------------
 `discover_topology()` returns a nested dict of URIs (not resource bodies)
@@ -34,6 +68,11 @@ describing everything found:
           "network_interfaces": "...", "log_services": "...",
           "pcie_devices": "...", "pcie_functions": "...",
           "bios": "...", "secure_boot": "...",
+          # HPE iLO 4 OEM storage fallback (absent when standard storage exists):
+          "storage_hpe": "..." | None,
+          # iDRAC 7 summary fallbacks (absent when collection links exist):
+          "processor_summary": {...} | None,
+          "memory_summary":    {...} | None,
       }, ...
   },
   "per_chassis": {
@@ -115,7 +154,36 @@ def _collection_members(collection_doc: dict | None) -> list[str]:
 def discover_topology(client) -> dict:
     service_root = client.get("/redfish/v1/")
     if not service_root:
-        raise RuntimeError("Could not read /redfish/v1/ - is this a valid Redfish endpoint?")
+        # iDRAC 6 and some very early iDRAC 7 firmware do not have a Redfish API at all.
+        # Instead of crashing discovery, return an empty topology. The component collectors
+        # will gracefully yield "Not Supported" for everything.  The polling engine detects
+        # the empty service_root and routes to the WS-Man fallback path for iDRAC 6.
+        logger.info(
+            "GET /redfish/v1/ returned nothing from %s — "
+            "no Redfish API (iDRAC 6 or unreachable). Returning empty topology.",
+            client.session.base_url,
+        )
+        return {
+            "service_root": {},
+            "systems": [],
+            "chassis": [],
+            "managers": [],
+            "update_service": None,
+            "event_service": None,
+            "task_service": None,
+            "telemetry_service": None,
+            "per_system": {},
+            "per_chassis": {},
+            "per_manager": {}
+        }
+
+    # Log capability map at DEBUG level (harmless in production, invaluable when
+    # diagnosing iDRAC 7 empty sections with DEBUG logging enabled).
+    try:
+        from redfish.dell_idrac7_compat import log_service_root_capabilities
+        log_service_root_capabilities(service_root, client.session.base_url)
+    except Exception:
+        pass  # logging helper must never break discovery
 
     topology = {
         "service_root": service_root,
@@ -158,7 +226,98 @@ def discover_topology(client) -> dict:
         oem = body.get("Oem", {})
         links["oem"] = oem if oem else None
 
+        # ── iDRAC 7 inline-summary fallbacks ────────────────────────────
+        # iDRAC 7 early Redfish 1.0.x embeds ProcessorSummary / MemorySummary
+        # as inline objects on the System body rather than as browsable
+        # collection links.  We extract them here so processor.py and memory.py
+        # can synthesize at least one component from the summary data.
+        # These assignments are ONLY made when the corresponding collection
+        # link is absent — iDRAC 8/9 topology is completely unaffected.
+
+        if "processors" not in links:
+            ps = body.get("ProcessorSummary") or {}
+            if ps:
+                links["processor_summary"] = ps
+                logger.info(
+                    "iDRAC compat [%s]: no Processors collection link — "
+                    "found inline ProcessorSummary (Count=%s, Model=%s)",
+                    system_uri, ps.get("Count"), ps.get("Model"),
+                )
+            else:
+                logger.debug(
+                    "iDRAC compat [%s]: no Processors link AND no ProcessorSummary — "
+                    "processor card will show 'Not Supported'", system_uri,
+                )
+
+        if "memory" not in links:
+            ms = body.get("MemorySummary") or {}
+            if ms:
+                links["memory_summary"] = ms
+                logger.info(
+                    "iDRAC compat [%s]: no Memory collection link — "
+                    "found inline MemorySummary (TotalSystemMemoryGiB=%s)",
+                    system_uri, ms.get("TotalSystemMemoryGiB"),
+                )
+            else:
+                logger.debug(
+                    "iDRAC compat [%s]: no Memory link AND no MemorySummary — "
+                    "memory card will show 'Not Supported'", system_uri,
+                )
+
         topology["per_system"][system_uri] = links
+
+        # ── HPE iLO 4 OEM fallbacks ──────────────────────────────────────
+        # iLO 4 does not expose standard Storage or Memory collection links.
+        # Both are advertised inside the Oem.Hp / Oem.Hpe block of the
+        # ComputerSystem body.  We extract them here and inject them into
+        # the topology under well-known keys so the existing storage.py,
+        # battery.py, and memory.py collectors can reach them without any
+        # additional HTTP calls or hardcoded URI construction.
+        #
+        # Guards:
+        #   - SmartStorage OEM link is only injected when BOTH the standard
+        #     "storage" AND "simple_storage" links are absent, preventing any
+        #     risk of overwriting a working standard path on iLO 5/6 or Dell.
+        #   - Memory OEM link is only injected when the standard "memory" link
+        #     is absent AND the OEM block actually contains a Memory link.
+        #   - Both blocks are wrapped in try/except so a malformed OEM block
+        #     on a non-HPE server can never break discovery.
+        try:
+            from redfish.hpe_compat import get_hpe_oem_block, get_smart_storage_uri
+            hpe_oem = get_hpe_oem_block(body)
+
+            # SmartStorage OEM storage link (iLO 4 Gen9 primary storage path)
+            if "storage" not in links and "simple_storage" not in links:
+                ss_uri = get_smart_storage_uri(body)
+                if ss_uri:
+                    links["storage_hpe"] = ss_uri
+                    logger.info(
+                        "HPE compat [%s]: standard Storage absent — "
+                        "using SmartStorage OEM link: %s",
+                        system_uri, ss_uri,
+                    )
+
+            # Memory OEM link (some iLO 4 firmware exposes it here)
+            if "memory" not in links:
+                hpe_mem_link = _odata_id(hpe_oem.get("Memory")) or _odata_id(hpe_oem.get("Links", {}).get("Memory"))
+                if hpe_mem_link:
+                    links["memory"] = hpe_mem_link
+                    logger.info(
+                        "HPE compat [%s]: standard Memory absent — "
+                        "using OEM Memory link: %s",
+                        system_uri, hpe_mem_link,
+                    )
+        except Exception as _hpe_exc:
+            logger.debug(
+                "HPE OEM link extraction skipped for %s: %s", system_uri, _hpe_exc
+            )
+
+        # Verbose link availability log (DEBUG only)
+        try:
+            from redfish.dell_idrac7_compat import log_system_link_availability
+            log_system_link_availability(system_uri, links)
+        except Exception:
+            pass
 
     for chassis_uri_item in topology["chassis"]:
         body = client.get(chassis_uri_item)
@@ -170,6 +329,13 @@ def discover_topology(client) -> dict:
             if uri:
                 links[out_key] = uri
         topology["per_chassis"][chassis_uri_item] = links
+
+        # Verbose chassis link log (DEBUG only)
+        try:
+            from redfish.dell_idrac7_compat import log_chassis_link_availability
+            log_chassis_link_availability(chassis_uri_item, links)
+        except Exception:
+            pass
 
     for manager_uri in topology["managers"]:
         body = client.get(manager_uri)
@@ -183,8 +349,11 @@ def discover_topology(client) -> dict:
         topology["per_manager"][manager_uri] = links
 
     logger.info(
-        "Discovered %d system(s), %d chassis, %d manager(s) at %s",
+        "Discovered %d system(s), %d chassis, %d manager(s) at %s "
+        "(UpdateService=%s, EventService=%s)",
         len(topology["systems"]), len(topology["chassis"]), len(topology["managers"]),
         client.session.base_url,
+        "yes" if topology.get("update_service") else "no",
+        "yes" if topology.get("event_service") else "no",
     )
     return topology

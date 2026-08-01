@@ -192,49 +192,165 @@ class PollingEngine:
         redfish_session = self.session_manager.get_session(server.id, base_url, server.username, password)
         client = RedfishClient(redfish_session, self.config)
 
+        server_id_val = server.id
+        hostname_val = server.hostname
+        ip_val = server.ip_address
+
         try:
             topology = self._get_topology(client, server)
         except RedfishAuthError:
             self._mark_connection(server, ConnectionStatus.AUTH_FAILED, "Authentication failed")
-            alert_engine.raise_connection_alert(
-                db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
-                f"Authentication failed for {server.hostname} ({server.ip_address})", "auth_failed",
-            )
+            try:
+                alert_engine.raise_connection_alert(
+                    db.session, server_id_val, alert_engine.AlertSeverity.CRITICAL,
+                    f"Authentication failed for {hostname_val} ({ip_val})", "auth_failed",
+                )
+            except Exception:
+                pass
             return
         except RedfishUnreachableError as exc:
             self._mark_connection(server, ConnectionStatus.UNREACHABLE, str(exc))
-            alert_engine.raise_connection_alert(
-                db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
-                f"{server.hostname} ({server.ip_address}) unreachable: {exc}", "unreachable",
-            )
+            try:
+                alert_engine.raise_connection_alert(
+                    db.session, server_id_val, alert_engine.AlertSeverity.CRITICAL,
+                    f"{hostname_val} ({ip_val}) unreachable: {exc}", "unreachable",
+                )
+            except Exception:
+                pass
             return
 
         alert_engine.resolve_connection_alerts(db.session, server.id, "auth_failed")
         alert_engine.resolve_connection_alerts(db.session, server.id, "unreachable")
 
+        is_idrac7 = (topology.get("idrac_generation") == "idrac7")
+        if topology.get("idrac_generation") == "idrac6":
+            logger.info("iDRAC 6 detected for %s — branching to WS-Man polling", server.id)
+            self._run_wsman_poll(server, password)
+            return
+
+        if topology.get("ilo_generation") in ("ilo2", "ilo3"):
+            logger.info("HPE %s detected for %s — branching to RIBCL polling", topology["ilo_generation"].upper(), server.id)
+            self._run_ribcl_poll(server, password)
+            return
+
+        collected_categories = set()
+
         # -- run every category collector ----------------------------------
         for category_name, collector_module in COLLECTOR_REGISTRY.items():
+            logger.info("Polling started for %s on server %s", category_name, server.id)
             try:
                 components, readings = collector_module.collect(client, server, topology)
-            except Exception:
-                logger.exception("Collector '%s' failed for server %s", category_name, server.id)
+                logger.info("Polling parsed successfully for %s (found %d components) on server %s", category_name, len(components), server.id)
+                if len(components) > 0 or len(readings) > 0:
+                    collected_categories.add(category_name)
+            except Exception as exc:
+                logger.exception("Parsing failed for collector '%s' on server %s: %s", category_name, server.id, exc)
                 continue
-            self._upsert_components(server, category_name, components)
-            self._insert_readings(server, readings)
-            alert_engine.evaluate_components(db.session, str(server.id), category_name, components, self.config)
-            ws_events.emit_component_update(
-                self.socketio, str(server.id), category_name,
-                [self._component_dict(x) for x in components],
-            )
+            
+            try:
+                self._upsert_components(server, category_name, components)
+                self._insert_readings(server, readings)
+                alert_engine.evaluate_components(db.session, str(server.id), category_name, components, self.config)
+                ws_events.emit_component_update(
+                    self.socketio, str(server.id), category_name,
+                    [self._component_dict(x) for x in components],
+                )
+                logger.info("Polling finished for %s - Stored %d components on server %s", category_name, len(components), server.id)
+            except Exception as exc:
+                db.session.rollback()
+                logger.exception("Database insertion failed for collector '%s' on server %s (rolling back): %s", category_name, server.id, exc)
+                continue
 
         # -- logs (append-only event stream) --------------------------------
+        has_logs = False
+        logger.info("Polling started for logs on server %s", server.id)
         try:
             log_dicts = logs_collector.collect(client, server, topology)
+            if log_dicts:
+                has_logs = True
             new_entries = self._upsert_logs(server, log_dicts)
             if new_entries:
                 ws_events.emit_log_entries(self.socketio, str(server.id), new_entries)
-        except Exception:
-            logger.exception("Log collection failed for server %s", server.id)
+            logger.info("Polling finished for logs - Stored %d entries on server %s", len(new_entries), server.id)
+        except Exception as exc:
+            db.session.rollback()
+            logger.exception("Log collection failed for server %s (rolling back): %s", server.id, exc)
+
+        # -- iDRAC 7 hybrid WS-Man fallback ----------------------------------
+        if is_idrac7:
+            from redfish.collectors.dell_wsman_collector import collect_wsman
+            from redfish.dell_wsman import WsManClient
+            
+            missing_categories = []
+            for c in ["processor", "memory", "storage", "network", "power", "thermal", "voltage", "fans", "firmware", "pcie_devices"]:
+                if c not in collected_categories:
+                    missing_categories.append(c)
+            if not has_logs:
+                missing_categories.append("logs")
+                
+            if missing_categories:
+                logger.info("iDRAC 7 hybrid fallback: fetching missing categories via WS-Man: %s", missing_categories)
+                ws_client = WsManClient(server.ip_address, server.username, password)
+                try:
+                    comp_dict, ws_readings, ws_logs = collect_wsman(ws_client, str(server.id), missing_categories)
+                    
+                    for cat_name, components in comp_dict.items():
+                        if cat_name in missing_categories and components:
+                            self._upsert_components(server, cat_name, components)
+                            alert_engine.evaluate_components(db.session, str(server.id), cat_name, components, self.config)
+                            ws_events.emit_component_update(
+                                self.socketio, str(server.id), cat_name,
+                                [self._component_dict(x) for x in components],
+                            )
+                    
+                    if ws_readings:
+                        self._insert_readings(server, ws_readings)
+                        
+                    if "logs" in missing_categories and ws_logs:
+                        new_entries = self._upsert_logs(server, ws_logs)
+                        if new_entries:
+                            ws_events.emit_log_entries(self.socketio, str(server.id), new_entries)
+                            
+                except Exception as exc:
+                    logger.exception("WS-Man fallback collection failed for %s: %s", server.id, exc)
+
+        # -- iLO 4 hybrid RIBCL fallback ----------------------------------
+        if topology.get("ilo_generation") == "ilo4":
+            from redfish.hpe_ribcl import RibclClient
+            from redfish.collectors import hpe_ribcl_collector
+            
+            missing_categories = []
+            for c in ["processor", "memory", "fans", "thermal", "power"]:
+                if c not in collected_categories:
+                    missing_categories.append(c)
+                    
+            if missing_categories:
+                logger.info("iLO 4 hybrid fallback: fetching missing categories via RIBCL: %s", missing_categories)
+                ribcl_client = RibclClient(server.ip_address, server.username, password, self.config.get("VERIFY_TLS", False))
+                try:
+                    comp_dict, ribcl_readings = hpe_ribcl_collector.collect_ribcl(ribcl_client, str(server.id))
+                    
+                    for cat_name, components in comp_dict.items():
+                        if cat_name in missing_categories and components:
+                            self._upsert_components(server, cat_name, components)
+                            alert_engine.evaluate_components(db.session, str(server.id), cat_name, components, self.config)
+                            ws_events.emit_component_update(
+                                self.socketio, str(server.id), cat_name,
+                                [self._component_dict(x) for x in components],
+                            )
+                    
+                    if ribcl_readings:
+                        # Insert readings that match missing categories
+                        filtered_readings = []
+                        for r in ribcl_readings:
+                            if (r["metric"] == "fan_speed" and "fans" in missing_categories) or \
+                               (r["metric"] == "temperature" and "thermal" in missing_categories):
+                                filtered_readings.append(r)
+                        if filtered_readings:
+                            self._insert_readings(server, filtered_readings)
+                            
+                except Exception as exc:
+                    logger.exception("RIBCL fallback collection failed for %s: %s", server.id, exc)
 
         # -- event subscription (best-effort) --------------------------------
         webhook_base = self.config.get("PUBLIC_WEBHOOK_BASE_URL")
@@ -255,6 +371,65 @@ class PollingEngine:
 
     # -- helpers -----------------------------------------------------------
 
+    def _run_wsman_poll(self, server, password):
+        from redfish.dell_wsman import WsManClient
+        from redfish.collectors import dell_wsman_collector
+
+        client = WsManClient(server.ip_address, server.username, password)
+        try:
+            comp_dict, readings, logs = dell_wsman_collector.collect_wsman(client, str(server.id))
+        except Exception as exc:
+            logger.exception("WS-Man top-level collection failed for %s: %s", server.id, exc)
+            self._mark_connection(server, ConnectionStatus.UNREACHABLE, f"WS-Man failed: {exc}")
+            return
+
+        for cat_name, components in comp_dict.items():
+            self._upsert_components(server, cat_name, components)
+            alert_engine.evaluate_components(db.session, str(server.id), cat_name, components, self.config)
+            ws_events.emit_component_update(
+                self.socketio, str(server.id), cat_name,
+                [self._component_dict(x) for x in components],
+            )
+
+        if readings:
+            self._insert_readings(server, readings)
+
+        if logs:
+            new_entries = self._upsert_logs(server, logs)
+            if new_entries:
+                ws_events.emit_log_entries(self.socketio, str(server.id), new_entries)
+
+        self._recompute_server_summary(server)
+        db.session.commit()
+        ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+
+    def _run_ribcl_poll(self, server, password):
+        from redfish.hpe_ribcl import RibclClient
+        from redfish.collectors import hpe_ribcl_collector
+
+        client = RibclClient(server.ip_address, server.username, password, self.config.get("VERIFY_TLS", False))
+        try:
+            comp_dict, readings = hpe_ribcl_collector.collect_ribcl(client, str(server.id))
+        except Exception as exc:
+            logger.exception("RIBCL top-level collection failed for %s: %s", server.id, exc)
+            self._mark_connection(server, ConnectionStatus.UNREACHABLE, f"RIBCL failed: {exc}")
+            return
+
+        for cat_name, components in comp_dict.items():
+            self._upsert_components(server, cat_name, components)
+            alert_engine.evaluate_components(db.session, str(server.id), cat_name, components, self.config)
+            ws_events.emit_component_update(
+                self.socketio, str(server.id), cat_name,
+                [self._component_dict(x) for x in components],
+            )
+
+        if readings:
+            self._insert_readings(server, readings)
+
+        self._recompute_server_summary(server)
+        db.session.commit()
+        ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+
     def _get_topology(self, client, server):
         refresh_interval = self.config["INVENTORY_REFRESH_INTERVAL_SECONDS"]
         last_refresh = self._last_inventory_refresh.get(server.id)
@@ -270,6 +445,22 @@ class PollingEngine:
         return self._topology_cache[server.id]
 
     def _upsert_components(self, server, category_name, components):
+        collector_db_categories = {
+            "storage": ["storage_controller", "storage_drive", "storage_volume"],
+            "pcie_devices": ["pcie"],
+            "logs": [],
+        }
+        db_categories = collector_db_categories.get(category_name, [category_name])
+        
+        collected_odata_ids = {c["odata_id"] for c in components}
+        
+        # Prune stale components that are no longer reported by the BMC
+        for cat in db_categories:
+            existing_components = Component.query.filter_by(server_id=server.id, category=cat).all()
+            for existing in existing_components:
+                if existing.odata_id not in collected_odata_ids:
+                    db.session.delete(existing)
+
         for c in components:
             existing = Component.query.filter_by(
                 server_id=server.id, category=c["category"], odata_id=c["odata_id"]
@@ -343,11 +534,20 @@ class PollingEngine:
         return new_entries
 
     def _mark_connection(self, server, status: ConnectionStatus, error_msg: str = ""):
-        server.connection_status = status
-        server.last_poll_error = error_msg
-        db.session.add(server)
-        db.session.commit()
-        ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+        from sqlalchemy.orm.exc import ObjectDeletedError
+        from sqlalchemy.exc import InvalidRequestError
+        try:
+            server.connection_status = status
+            server.last_poll_error = error_msg
+            db.session.add(server)
+            db.session.commit()
+            ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+        except (ObjectDeletedError, InvalidRequestError):
+            db.session.rollback()
+            logger.warning("Server %s was deleted during poll, discarding connection status update.", getattr(server, 'id', 'unknown'))
+        except Exception as exc:
+            db.session.rollback()
+            logger.error("Failed to mark connection status for server: %s", exc)
 
     def _recompute_server_summary(self, server):
         server.connection_status = ConnectionStatus.CONNECTED

@@ -12,7 +12,7 @@ Both shapes are checked; whichever exists is used. Reading, thresholds and
 Status are captured as returned - some BMCs only populate a subset
 (e.g. no LowerThreshold on a fixed-speed fan), which is normal.
 """
-from .common import component, reading
+from .common import component, reading, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -61,4 +61,8 @@ def collect(client, server, topology):
             readings.append(reading("fan_rpm", fan.get("Name"), rpm, unit))
 
     readings = [r for r in readings if r]
+
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.FAN))
+
     return components, readings

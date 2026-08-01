@@ -26,7 +26,7 @@ Additional fields collected per drive (extended):
 - Controller          : resolved from the controller body passed at collection time
 """
 import logging
-from .common import component, reading, collection_members
+from .common import component, reading, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,10 @@ def collect(client, server, topology):
                 ))
 
                 # Physical drives linked from controller
+                # Drive link shape varies by iDRAC generation:
+                #   iDRAC 9/10 (Redfish 2019+): top-level "Drives" is a list of {"@odata.id": "..."}
+                #   Some iDRAC 8 firmware:       "Drives" is a dict {"@odata.id": "<collection>"}
+                #   Other iDRAC 8 firmware:      drives under ctrl["Links"]["Drives"] as a list
                 drives_link = (ctrl.get("Drives") or [])
                 if isinstance(drives_link, list):
                     for d_ref in drives_link:
@@ -70,6 +74,18 @@ def collect(client, server, topology):
                                 continue
                             seen_drive_uris.add(uri)
                             _collect_drive_body(d, components, readings, ctrl_name)
+
+                # iDRAC 8 fallback: drives may be listed under Links.Drives when
+                # the top-level Drives key is absent or empty.
+                if not drives_link:
+                    links_drives = (ctrl.get("Links") or {}).get("Drives") or []
+                    for d_ref in links_drives:
+                        uri = d_ref.get("@odata.id") if isinstance(d_ref, dict) else None
+                        if not uri or uri in seen_drive_uris:
+                            continue
+                        seen_drive_uris.add(uri)
+                        _collect_drive(client, uri, components, readings, ctrl_name)
+
 
                 # Virtual disks / Volumes
                 volumes_link = (ctrl.get("Volumes") or {}).get("@odata.id")
@@ -118,7 +134,9 @@ def collect(client, server, topology):
                                 uri = d.get("@odata.id")
                                 if uri and uri not in seen_drive_uris:
                                     seen_drive_uris.add(uri)
-                                    _collect_drive_body(d, components, readings)
+                                    # Pass ctrl_name so the enriched drive body
+                                    # carries the parent controller name.
+                                    _collect_drive_body(d, components, readings, ctrl_name)
                                     
                         # Logical Drives
                         logical_link = (ctrl.get("Links") or {}).get("LogicalDrives", {}).get("@odata.id")
@@ -143,6 +161,12 @@ def collect(client, server, topology):
                     _collect_drive_body(drive, components, readings, controller_name=None)
 
     readings = [r for r in readings if r]
+
+    # Emit unsupported marker when no storage controllers or drives were found.
+    # iDRAC 8 can sometimes return 400 for the entire storage tree.
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.STORAGE_CONTROLLER))
+
     return components, readings
 
 

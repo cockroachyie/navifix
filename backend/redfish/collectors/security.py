@@ -16,7 +16,7 @@ TPM, Virtualization (VT-x/IOMMU), Lockdown/ManagerLockdown, and
 certificate management links are captured from wherever the BMC exposes
 them - primarily via BIOS attributes and OEM extensions.
 """
-from .common import component, collection_members
+from .common import component, collection_members, unsupported_marker
 from database.models import ComponentCategory
 
 
@@ -92,10 +92,18 @@ def collect(client, server, topology):
                         "Certificates", cert_body,
                     ))
 
-        # Lockdown mode (iDRAC ManagerLockdown, XCC SystemGuard)
+        # Lockdown mode
+        # iDRAC 9: Oem.Dell.ManagerLockdownMode (direct key)
+        # iDRAC 8: may be under Oem.Dell.iDRACCardService.ManagerLockdownMode
+        #          or Oem.Dell.DelliDRACCardService.ManagerLockdownMode
+        # HPE iLO: Oem.Hpe.Actions.Oem (kept as-is for HPE compatibility)
+        oem = mgr.get("Oem") or {}
+        dell_oem = oem.get("Dell") or {}
         lockdown = (
-            (mgr.get("Oem") or {}).get("Dell", {}).get("ManagerLockdownMode")
-            or (mgr.get("Oem") or {}).get("Hpe", {}).get("Actions", {}).get("Oem", {})
+            dell_oem.get("ManagerLockdownMode")
+            or (dell_oem.get("iDRACCardService") or {}).get("ManagerLockdownMode")
+            or (dell_oem.get("DelliDRACCardService") or {}).get("ManagerLockdownMode")
+            or (oem.get("Hpe") or {}).get("Actions", {}).get("Oem", {})
         )
         if lockdown is not None:
             ld_id = f"{manager_uri}#lockdown"
@@ -103,5 +111,9 @@ def collect(client, server, topology):
                 ComponentCategory.SECURITY, ld_id, "Manager Lockdown",
                 {"@odata.id": ld_id, "LockdownMode": lockdown},
             ))
+
+
+    if not components:
+        components.append(unsupported_marker(ComponentCategory.SECURITY))
 
     return components, []

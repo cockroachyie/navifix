@@ -22,6 +22,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _extract_sensor_type(val):
+    if not val:
+        return None
+    if isinstance(val, str):
+        return val
+    if isinstance(val, list):
+        parts = []
+        for v in val:
+            if isinstance(v, dict) and "Member" in v:
+                parts.append(str(v["Member"]))
+            else:
+                parts.append(str(v))
+        return ", ".join(parts)
+    if isinstance(val, dict):
+        return str(val.get("Member") or val)
+    return str(val)
+
+
 def _entries_from_service(client, log_service_uri):
     """Fetch all log entries from a single Redfish LogService resource.
 
@@ -92,7 +110,7 @@ def collect(client, server, topology):
                     "severity": (e.get("Severity") or "OK"),
                     "message": e.get("Message"),
                     "message_id": e.get("MessageId"),
-                    "sensor_type": e.get("SensorType"),
+                    "sensor_type": _extract_sensor_type(e.get("SensorType")),
                     "created_raw": e.get("Created"),
                     "raw_json": e,
                 })
