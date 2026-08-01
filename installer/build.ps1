@@ -66,8 +66,13 @@ Write-Host "  ✓ Version set to $Version" -ForegroundColor Green
 Write-Step "Installing Python dependencies"
 
 python -m pip install -r (Join-Path $ScriptDir "app\requirements.txt")  -q
+if ($LASTEXITCODE -ne 0) { throw "pip install failed for app requirements.txt" }
+
 python -m pip install -r (Join-Path $ScriptDir "tray\requirements.txt") -q
+if ($LASTEXITCODE -ne 0) { throw "pip install failed for tray requirements.txt" }
+
 python -m pip install pyinstaller Pillow -q
+if ($LASTEXITCODE -ne 0) { throw "pip install failed for build tools" }
 
 Write-Host "  ✓ Dependencies installed" -ForegroundColor Green
 

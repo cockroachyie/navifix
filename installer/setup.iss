@@ -113,9 +113,16 @@ function DockerIsInstalled(): Boolean;
 var
   Version: String;
 begin
-  Result := RegQueryStringValue(HKLM, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
+  // Check 64-bit registry first
+  Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
   if not Result then
-    Result := RegQueryStringValue(HKCU, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
+    Result := RegQueryStringValue(HKCU64, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
+  
+  // Fallback to 32-bit registry view
+  if not Result then
+    Result := RegQueryStringValue(HKLM32, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
+  if not Result then
+    Result := RegQueryStringValue(HKCU32, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
 end;
 
 function InitializeSetup(): Boolean;
