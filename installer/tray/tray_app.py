@@ -196,7 +196,7 @@ class NaviFixTray:
             self._tray.icon  = _make_icon(self._status)
             self._tray.title = f"{APP_NAME} — {self._status.capitalize()}"
 
-    def _status_label(self):
+    def _status_label(self, item=None):
         labels = {"running": "● Running", "stopped": "○ Stopped", "starting": "◌ Starting…"}
         return labels.get(self._status, APP_NAME)
 
