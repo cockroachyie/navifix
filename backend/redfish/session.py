@@ -414,7 +414,18 @@ class RedfishSession:
             return
 
         if resp.status_code in (401, 403):
-            raise RedfishAuthError(f"Authentication rejected by {self.base_url}")
+            logger.info(
+                "Session POST returned HTTP %s on %s — "
+                "verifying if this is a Lenovo XCC-style broken SessionService or genuine bad credentials",
+                resp.status_code, self.base_url
+            )
+            try:
+                self.uses_basic_auth_fallback = True
+                self._verify_basic_auth()
+                return
+            except RedfishAuthError:
+                self.uses_basic_auth_fallback = False
+                raise RedfishAuthError(f"Authentication rejected by {self.base_url}")
 
         if resp.status_code not in (200, 201):
             raise RedfishUnreachableError(
