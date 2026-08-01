@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
 <!-- App CSS -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=11">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=16">
 </head>
 <body>
 
@@ -48,6 +48,9 @@
         <span class="nav-count nav-count-alert" id="navAlertCount" style="display:none;"></span>
       </div>
     </nav>
+    <div class="sidebar-brand-footer">
+      <span class="pulse-dot"></span> Powered by Navigator Systems
+    </div>
   </div>
 
   <!-- Main content -->
@@ -74,6 +77,13 @@
     <div class="field">
       <label>BMC Password (Optional if using Agent)</label>
       <input id="f_password" type="password" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Management Protocol</label>
+      <select id="f_protocol" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
+        <option value="redfish">Redfish</option>
+        <option value="ilo2">iLO 2 (IPMI / RIBCL)</option>
+      </select>
     </div>
     <div class="field">
       <label>Site ID (Optional)</label>
@@ -124,6 +134,13 @@
     <div class="field">
       <label>New BMC Password <span style="color:var(--text-faint);font-size:10px;">(leave blank to keep current)</span></label>
       <input id="e_password" type="password" autocomplete="new-password" placeholder="••••••••">
+    </div>
+    <div class="field">
+      <label>Management Protocol</label>
+      <select id="e_protocol" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
+        <option value="redfish">Redfish</option>
+        <option value="ilo2">iLO 2 (IPMI / RIBCL)</option>
+      </select>
     </div>
     <div class="field">
       <label>Site ID (Optional)</label>
@@ -186,6 +203,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <!-- App -->
-<script src="{{ url_for('static', filename='js/app.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}?v=16"></script>
 </body>
 </html>

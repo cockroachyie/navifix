@@ -40,6 +40,19 @@ def collect(client, server, topology):
             if body:
                 voltage_items.extend(body.get("Voltages", []))
 
+                # Fallback: extract LineInputVoltage from PowerSupplies (e.g. on HPE iLO)
+                for ps in body.get("PowerSupplies", []):
+                    volts = ps.get("LineInputVoltage")
+                    if volts is not None and volts > 0:
+                        member_id = ps.get("MemberId") or ps.get("Id") or ps.get("SerialNumber", "PowerSupply")
+                        voltage_items.append({
+                            "@odata.id": ps.get("@odata.id", f"{power_uri}#PowerSupplies#{member_id}"),
+                            "Name": f"{ps.get('Name', 'Power Supply')} Input Voltage",
+                            "ReadingVolts": volts,
+                            "Status": ps.get("Status", {"Health": "OK", "State": "Enabled"}),
+                            "PhysicalContext": "PowerSupply"
+                        })
+
         # ── 2021.x EnvironmentMetrics ───────────────────────────────────
         env_uri = links.get("environment_metrics")
         if env_uri:

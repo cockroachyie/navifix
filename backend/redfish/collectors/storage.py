@@ -96,39 +96,49 @@ def collect(client, server, topology):
                     ))
 
         # ── HPE SmartStorage fallback (iLO 4/5) ─────────────────────────
-        hpe_uri = links.get("storage_hpe")
+        # topology key set by discovery.py HP fallback probe
+        hpe_uri = links.get("smart_storage_hpe") or links.get("storage_hpe")
         if hpe_uri:
             smart_storage = client.get(hpe_uri)
             if smart_storage:
-                controllers_link = (smart_storage.get("Links") or {}).get("ArrayControllers", {}).get("@odata.id")
+                # iLO 4 uses lowercase "links" with "href" values (not standard Links/@odata.id)
+                def _hp_href(body, key):
+                    """Get href from HP legacy links dict or standard Links/@odata.id."""
+                    v = (body.get("links") or {}).get(key, {})
+                    href = v.get("href")
+                    if href:
+                        return href
+                    return (body.get("Links") or {}).get(key, {}).get("@odata.id")
+
+                controllers_link = _hp_href(smart_storage, "ArrayControllers")
                 if controllers_link:
                     for ctrl in collection_members(client, controllers_link):
                         ctrl_id = ctrl.get("@odata.id")
                         if not ctrl_id:
                             continue
-                        ctrl_name = ctrl.get("Name") or ctrl.get("Model") or "Smart Array Controller"
+                        ctrl_name = ctrl.get("Model") or ctrl.get("Name") or "Smart Array Controller"
                         components.append(component(
                             ComponentCategory.STORAGE_CONTROLLER, ctrl_id, ctrl_name, ctrl,
                         ))
-                        
-                        # Drives
-                        drives_link = (ctrl.get("Links") or {}).get("PhysicalDrives", {}).get("@odata.id")
+
+                        # Physical drives — HP uses links.PhysicalDrives.href
+                        drives_link = _hp_href(ctrl, "PhysicalDrives")
                         if drives_link:
                             for d in collection_members(client, drives_link):
                                 uri = d.get("@odata.id")
                                 if uri and uri not in seen_drive_uris:
                                     seen_drive_uris.add(uri)
-                                    _collect_drive_body(d, components, readings)
-                                    
-                        # Logical Drives
-                        logical_link = (ctrl.get("Links") or {}).get("LogicalDrives", {}).get("@odata.id")
+                                    _collect_hp_drive_body(d, components, readings, ctrl_name)
+
+                        # Logical drives
+                        logical_link = _hp_href(ctrl, "LogicalDrives")
                         if logical_link:
                             for vol in collection_members(client, logical_link):
                                 vol_id = vol.get("@odata.id")
                                 if vol_id:
                                     components.append(component(
                                         ComponentCategory.STORAGE_VOLUME, vol_id,
-                                        vol.get("Name") or vol.get("LogicalDriveName") or "Logical Drive", vol,
+                                        vol.get("LogicalDriveName") or vol.get("Name") or "Logical Drive", vol,
                                     ))
 
         # ── Chassis-level drives ────────────────────────────────────────
@@ -263,3 +273,53 @@ def _collect_drive_body(body, components, readings, controller_name=None):
     temp = body.get("TemperatureCelsius")
     if temp is not None:
         readings.append(reading("disk_temperature", name, temp, "Cel"))
+
+
+def _collect_hp_drive_body(body, components, readings, controller_name=None):
+    """Collect a physical drive body from HP SmartStorage (iLO 4/5 format).
+
+    HP SmartStorage drives use different field names than standard Redfish:
+    - CapacityGB / CapacityMiB  instead of CapacityBytes
+    - InterfaceType              (SAS, SATA)
+    - RotationalSpeedRpm         instead of RotationSpeedRPM
+    - FirmwareVersion.Current.VersionString
+    - CurrentTemperatureCelsius  instead of TemperatureCelsius
+    - Location / LocationFormat  (e.g., "1I:1:1")
+    """
+    odata_id = body.get("@odata.id")
+
+    # HP drives use Location as a string (e.g. "1I:1:1") not a nested object
+    raw_location = body.get("Location") or ""
+    model = body.get("Model") or body.get("Name") or "Drive"
+    name = f"{model} ({raw_location})" if raw_location else model
+
+    # Normalise capacity to CapacityBytes so existing UI code works
+    enriched = dict(body)
+    cap_gb = body.get("CapacityGB")
+    cap_mib = body.get("CapacityMiB")
+    if cap_gb and "CapacityBytes" not in enriched:
+        enriched["CapacityBytes"] = int(cap_gb * 1_000_000_000)
+    elif cap_mib and "CapacityBytes" not in enriched:
+        enriched["CapacityBytes"] = int(cap_mib * 1_048_576)
+
+    # Normalise firmware version
+    fw = body.get("FirmwareVersion")
+    if isinstance(fw, dict):
+        enriched["FirmwareVersion"] = (fw.get("Current") or {}).get("VersionString", "")
+
+    # Controller cross-reference
+    enriched["controller"] = controller_name
+
+    # HP predictive failure info
+    enriched["predictive_failure"] = None  # not exposed by HP SmartStorage on iLO 4
+
+    components.append(component(
+        ComponentCategory.STORAGE_DRIVE, odata_id, name, enriched,
+        location=raw_location or None,
+    ))
+
+    # Time-series
+    temp = body.get("CurrentTemperatureCelsius")
+    if temp is not None:
+        readings.append(reading("disk_temperature", name, temp, "Cel"))
+

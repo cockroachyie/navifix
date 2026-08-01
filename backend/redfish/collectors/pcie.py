@@ -54,17 +54,29 @@ def collect(client, server, topology):
                         ComponentCategory.PCIE_DEVICE, func_uri, func_name, func,
                     ))
 
-    # ── System-level PCIeDevices ─────────────────────────────────────────
+    # ── System-level PCIeDevices & Slots ──────────────────────────────────
     for system_uri, links in topology.get("per_system", {}).items():
         pcie_uri = links.get("pcie_devices")
         if pcie_uri:
             for dev in collection_members(client, pcie_uri):
                 _add_device(dev)
 
-        hpe_pcie_uri = links.get("pcie_devices_hpe")
+        hpe_pcie_uri = links.get("pcie_devices_hpe") or links.get("pci_devices_hpe")
         if hpe_pcie_uri:
             for dev in collection_members(client, hpe_pcie_uri):
                 _add_device(dev)
+
+        # HP iLO 4 / Gen9 PCISlots are collections of individual slot resources
+        hpe_slots_uri = links.get("pcie_slots_hpe") or links.get("pci_slots_hpe")
+        if hpe_slots_uri:
+            for slot in collection_members(client, hpe_slots_uri):
+                slot_uri = slot.get("@odata.id")
+                if slot_uri and slot_uri not in seen:
+                    seen.add(slot_uri)
+                    slot_name = slot.get("Name") or f"PCIe Slot {slot.get('Id', '')}"
+                    components.append(component(
+                        ComponentCategory.PCIE_DEVICE, slot_uri, slot_name, slot,
+                    ))
 
         # Direct PCIeFunction links (some systems expose them directly)
         func_uri = links.get("pcie_functions")

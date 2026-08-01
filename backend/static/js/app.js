@@ -180,6 +180,7 @@ function openEditServerModal(server) {
   $("#e_display_name").value = server.display_name || server.hostname;
   $("#e_username").value = server.username || "";
   $("#e_password").value = "";
+  $("#e_protocol").value = server.management_protocol || "redfish";
   $("#e_site_id").value = server.site_id || "";
   $("#e_agent_id").value = server.agent_id || "";
   $("#e_customer_name").value = server.customer_name || "";
@@ -200,6 +201,7 @@ function wireEditServerModal() {
     const payload = {
       display_name: $("#e_display_name").value.trim(),
       username: $("#e_username").value.trim(),
+      management_protocol: $("#e_protocol").value,
       polling_interval_seconds: parseInt($("#e_interval").value, 10) || 30,
       customer_name: $("#e_customer_name").value.trim(),
       customer_location: $("#e_customer_location").value.trim(),
@@ -1479,6 +1481,7 @@ function wireAddServerModal() {
       ip_address: $("#f_ip").value.trim(),
       username: $("#f_username").value.trim(),
       password: $("#f_password").value,
+      management_protocol: $("#f_protocol").value,
       polling_interval_seconds: parseInt($("#f_interval").value, 10) || 30,
       customer_name: $("#f_customer_name").value.trim(),
       customer_location: $("#f_customer_location").value.trim(),
@@ -1495,6 +1498,7 @@ function wireAddServerModal() {
         const el = $(`#${id}`);
         if (el) el.value = "";
       });
+      $("#f_protocol").value = "redfish";
       await loadServers();
       toast("Server added - discovery in progress");
     } catch (e) {

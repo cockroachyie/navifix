@@ -71,4 +71,44 @@ def collect(client, server, topology):
                                     ComponentCategory.FIRMWARE, uri, name, item, location=loc,
                                 ))
 
+    # ── HP iLO 4 manager firmware (no UpdateService on Redfish v1.0.0) ───
+    # On Gen9, /redfish/v1/Managers/1/ contains FirmwareVersion directly.
+    # Also try the HP-specific manager FirmwareInventory sub-resource.
+    for manager_uri, mgr_links in topology.get("per_manager", {}).items():
+        # From manager body FirmwareVersion field (always available on iLO 4)
+        mgr_body = client.get(manager_uri)
+        if mgr_body:
+            fw_ver = mgr_body.get("FirmwareVersion")
+            if fw_ver:
+                uri = f"{manager_uri}#ilo_firmware"
+                if uri not in seen:
+                    seen.add(uri)
+                    name = mgr_body.get("Name") or "iLO Firmware"
+                    components.append(component(
+                        ComponentCategory.FIRMWARE, uri, name,
+                        {"Version": fw_ver, "Name": name, "Updateable": True,
+                         "@odata.id": manager_uri},
+                        location="BMC",
+                    ))
+
+        # HP manager FirmwareInventory link (iLO 5 and some iLO 4)
+        hpe_fw_uri = mgr_links.get("firmware_hpe")
+        if hpe_fw_uri:
+            body = client.get(hpe_fw_uri)
+            if body and body.get("Current"):
+                for category, items in body["Current"].items():
+                    if isinstance(items, list):
+                        for idx, item in enumerate(items):
+                            if not item or not isinstance(item, dict):
+                                continue
+                            name = item.get("Name", "Firmware Component")
+                            loc = item.get("Location")
+                            uri = f"{hpe_fw_uri}#{category}/{idx}"
+                            if uri not in seen:
+                                seen.add(uri)
+                                components.append(component(
+                                    ComponentCategory.FIRMWARE, uri, name, item, location=loc,
+                                ))
+
     return components, []
+

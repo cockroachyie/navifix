@@ -106,6 +106,28 @@ def _odata_id(obj) -> str | None:
     return None
 
 
+def _href_or_odata(body: dict, key: str) -> str | None:
+    """Return the URI for *key* from either standard Redfish (@odata.id) or
+    the HP iLO legacy REST format (links.KEY.href).  The HP format is used
+    on iLO 4 (Gen8/Gen9) where sub-resource links are nested under a top-
+    level "links" dict with "href" values instead of @odata.id."""
+    # Standard: {"Key": {"@odata.id": "/..."}}
+    uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
+    if uri:
+        return uri
+    # HP iLO 4 legacy: {"links": {"Key": {"href": "/..."}}}
+    return body.get("links", {}).get(key, {}).get("href") or None
+
+
+def _probe_uri(client, uri: str) -> bool:
+    """Return True if client.get(uri) returns a non-empty, non-error response."""
+    try:
+        body = client.get(uri)
+        return bool(body and "@odata.id" in body or (body and "Members" in body))
+    except Exception:
+        return False
+
+
 def _collection_members(collection_doc: dict | None) -> list[str]:
     if not collection_doc:
         return []
@@ -149,14 +171,36 @@ def discover_topology(client) -> dict:
             continue
         links = {}
         for key, out_key in SYSTEM_LINK_KEYS.items():
-            uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
+            uri = _href_or_odata(body, key)
             if uri:
                 links[out_key] = uri
-        # Storage/SimpleStorage/EthernetInterfaces etc. can also live under
-        # "Links" -> "Oem" on some BMCs; we don't special-case any vendor,
-        # but we do check the standard Links block too.
+
         oem = body.get("Oem", {})
         links["oem"] = oem if oem else None
+
+        # ── HP iLO 4 / Gen9 fallback probing ─────────────────────────────
+        # iLO 4 does not advertise Memory, Processors, or SmartStorage via
+        # standard @odata.id links in the System body.  The paths exist but
+        # must be discovered by probing well-known HP sub-paths.
+        base = system_uri.rstrip("/")
+        _HP_FALLBACKS = {
+            "processors":        f"{base}/Processors/",
+            "memory":            f"{base}/Memory/",
+            "smart_storage_hpe": f"{base}/SmartStorage/",
+            "pci_devices_hpe":   f"{base}/PCIDevices/",
+            "pci_slots_hpe":     f"{base}/PCISlots/",
+        }
+        for out_key, candidate in _HP_FALLBACKS.items():
+            if out_key not in links:
+                if _probe_uri(client, candidate):
+                    links[out_key] = candidate
+                    logger.debug("HP fallback: %s -> %s", out_key, candidate)
+
+        # Also check HP OEM firmware inventory link on the system
+        hpe_fw = (_href_or_odata(body.get("Oem", {}).get("Hp", {}), "FirmwareInventory")
+                  or _href_or_odata(body.get("Oem", {}).get("Hpe", {}), "FirmwareInventory"))
+        if hpe_fw:
+            links["firmware_hpe"] = hpe_fw
 
         topology["per_system"][system_uri] = links
 
@@ -166,7 +210,7 @@ def discover_topology(client) -> dict:
             continue
         links = {}
         for key, out_key in CHASSIS_LINK_KEYS.items():
-            uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
+            uri = _href_or_odata(body, key)
             if uri:
                 links[out_key] = uri
         topology["per_chassis"][chassis_uri_item] = links
@@ -177,9 +221,14 @@ def discover_topology(client) -> dict:
             continue
         links = {}
         for key, out_key in MANAGER_LINK_KEYS.items():
-            uri = _odata_id(body.get(key)) or _odata_id(body.get("Links", {}).get(key))
+            uri = _href_or_odata(body, key)
             if uri:
                 links[out_key] = uri
+        # HP iLO 4: firmware inventory may be under OEM.Hp.links
+        hpe_fw = (_href_or_odata(body.get("Oem", {}).get("Hp", {}), "FirmwareInventory")
+                  or _href_or_odata(body.get("Oem", {}).get("Hpe", {}), "FirmwareInventory"))
+        if hpe_fw:
+            links["firmware_hpe"] = hpe_fw
         topology["per_manager"][manager_uri] = links
 
     logger.info(

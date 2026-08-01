@@ -145,6 +145,37 @@ def collect(client, server, topology):
                                 "battery_health", name, 100 if status in ("Present", "Ready", "OK") else 0, "%"
                             ))
 
+        # HP SmartStorage fallback
+        hpe_storage_uri = links.get("smart_storage_hpe")
+        if hpe_storage_uri:
+            smart_storage = client.get(hpe_storage_uri)
+            if smart_storage:
+                # Resolve link format for iLO 4
+                def _hp_href(body, key):
+                    v = (body.get("links") or {}).get(key, {})
+                    href = v.get("href")
+                    if href:
+                        return href
+                    return (body.get("Links") or {}).get(key, {}).get("@odata.id")
+
+                controllers_link = _hp_href(smart_storage, "ArrayControllers")
+                if controllers_link:
+                    for ctrl in collection_members(client, controllers_link):
+                        status = ctrl.get("BackupPowerSourceStatus")
+                        if status:
+                            ctrl_id = ctrl.get("@odata.id") or f"{hpe_storage_uri}#controller#{ctrl.get('Id','')}"
+                            bat_uri = f"{ctrl_id}#battery"
+                            if bat_uri not in seen_uris:
+                                seen_uris.add(bat_uri)
+                                name = f"{ctrl.get('Model', ctrl.get('Name', 'Smart Array Controller'))} Backup Battery"
+                                components.append(component(
+                                    ComponentCategory.BATTERY, bat_uri, name, ctrl,
+                                    location=ctrl.get("Location")
+                                ))
+                                readings.append(reading(
+                                    "battery_health", name, 100 if status in ("Present", "Ready", "OK") else 0, "%"
+                                ))
+
     # If no battery components were found from any path, mark as not supported
     # so the UI shows "Not Supported" instead of a misleading "0" count.
     real_components = [c for c in components if c.get("odata_id") != "meta:unsupported"]
