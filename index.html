@@ -43,6 +43,9 @@
     <div class="server-list" id="serverList">
       <div class="sidebar-empty">No servers yet. Click <b>+</b> to add one.</div>
     </div>
+    <div class="sidebar-brand-footer">
+      <span class="pulse-dot"></span> Powered by Navigator Systems
+    </div>
   </div>
 
   <!-- Main content -->
@@ -85,6 +88,13 @@
     <div class="field">
       <label>BMC Password</label>
       <input id="f_password" type="password" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Management Protocol</label>
+      <select id="f_protocol" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
+        <option value="redfish">Redfish</option>
+        <option value="ilo2">iLO 2 (IPMI / RIBCL)</option>
+      </select>
     </div>
     <div class="field-row" style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
       <div class="field">

@@ -848,6 +848,7 @@ function wireAddServerModal() {
       ip_address: $("#f_ip").value.trim(),
       username: $("#f_username").value.trim(),
       password: $("#f_password").value,
+      management_protocol: $("#f_protocol").value,
       polling_interval_seconds: parseInt($("#f_interval").value, 10) || 30,
       customer_name: $("#f_customer_name").value.trim(),
       customer_location: $("#f_customer_location").value.trim(),
@@ -860,6 +861,7 @@ function wireAddServerModal() {
         const el = $(`#${id}`);
         if (el) el.value = "";
       });
+      $("#f_protocol").value = "redfish";
       await loadServers();
       toast("Server added - discovery in progress");
     } catch (e) {
