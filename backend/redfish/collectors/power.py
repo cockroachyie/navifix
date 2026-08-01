@@ -29,14 +29,18 @@ def collect(client, server, topology):
             power_body = client.get(power_uri)
             if power_body:
                 # Power supplies
-                for psu in power_body.get("PowerSupplies", []):
+                for idx, psu in enumerate(power_body.get("PowerSupplies", [])):
+                    bay = psu.get("Oem", {}).get("Hp", {}).get("BayNumber")
+                    unique_id = psu.get("MemberId") or psu.get("SerialNumber") or (f"bay{bay}" if bay else None) or str(idx + 1)
                     odata_id = (
                         psu.get("@odata.id")
-                        or f"{chassis_uri}#psu#{psu.get('MemberId', psu.get('Name'))}"
+                        or f"{chassis_uri}#psu#{unique_id}"
                     )
-                    name     = psu.get("Name") or psu.get("PowerSupplyType") or "PSU"
+                    name     = psu.get("Name") or psu.get("PowerSupplyType") or f"PSU {idx + 1}"
+                    if bay:
+                        name = f"Power Supply {bay}"
                     location = psu.get("Location", {}).get("PartLocation", {}).get("ServiceLabel") \
-                               if isinstance(psu.get("Location"), dict) else None
+                               if isinstance(psu.get("Location"), dict) else (f"Bay {bay}" if bay else None)
 
                     components.append(component(
                         ComponentCategory.POWER_SUPPLY, odata_id, name, psu, location=location,

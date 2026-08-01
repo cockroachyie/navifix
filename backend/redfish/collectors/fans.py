@@ -50,15 +50,18 @@ def collect(client, server, topology):
         if links.get("thermal_subsystem"):
             fans.extend(_from_thermal_subsystem(client, links["thermal_subsystem"]))
 
-        for fan in fans:
-            odata_id = fan.get("@odata.id") or f"{chassis_uri}#fan#{fan.get('MemberId', fan.get('Name'))}"
+        for idx, fan in enumerate(fans):
+            fan_name = fan.get("FanName") or fan.get("Name") or f"Fan {idx + 1}"
+            unique_id = fan.get("MemberId") or fan.get("FanName") or fan.get("Name") or str(idx + 1)
+            odata_id = fan.get("@odata.id") or f"{chassis_uri}#fan#{unique_id}"
+
             components.append(component(
-                ComponentCategory.FAN, odata_id, fan.get("Name", "Fan"), fan,
+                ComponentCategory.FAN, odata_id, fan_name, fan,
                 location=fan.get("PhysicalContext"),
             ))
-            rpm = fan.get("Reading") or fan.get("SpeedRPM")
-            unit = fan.get("ReadingUnits", "RPM")
-            readings.append(reading("fan_rpm", fan.get("Name"), rpm, unit))
+            rpm = fan.get("Reading") or fan.get("SpeedRPM") or fan.get("CurrentReading")
+            unit = fan.get("ReadingUnits") or fan.get("Units") or "RPM"
+            readings.append(reading("fan_rpm", fan_name, rpm, unit))
 
     readings = [r for r in readings if r]
     return components, readings
