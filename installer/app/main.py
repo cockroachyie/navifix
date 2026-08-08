@@ -104,7 +104,8 @@ class NaviFixApp:
 
     def show(self):
         """Create and display the native window."""
-        splash_url = f"file:///{SPLASH_PATH.replace(os.sep, '/')}"
+        from pathlib import Path
+        splash_url = Path(SPLASH_PATH).as_uri()
 
         self.window = webview.create_window(
             title        = APP_NAME,
@@ -118,7 +119,7 @@ class NaviFixApp:
         )
 
         # Attach close handler
-        self.window.closing += self.on_closing
+        self.window.events.closing += self.on_closing
 
         # Start backend health watcher in background
         t = threading.Thread(

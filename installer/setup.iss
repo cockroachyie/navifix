@@ -113,16 +113,32 @@ function DockerIsInstalled(): Boolean;
 var
   Version: String;
 begin
-  // Check 64-bit registry first
-  Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
+  // 1. Check default installation directories first (very robust)
+  Result := FileExists(ExpandConstant('{commonpf}\Docker\Docker\resources\bin\docker.exe'));
+  if not Result then
+    Result := FileExists(ExpandConstant('{localappdata}\Docker\Docker\resources\bin\docker.exe'));
+  if not Result then
+    Result := FileExists('C:\Program Files\Docker\Docker\resources\bin\docker.exe');
+
+  // 2. Check 64-bit registry keys
+  if not Result then
+    Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
   if not Result then
     Result := RegQueryStringValue(HKCU64, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
-  
-  // Fallback to 32-bit registry view
+  if not Result then
+    Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop', 'UninstallString', Version);
+  if not Result then
+    Result := RegQueryStringValue(HKCU64, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop', 'UninstallString', Version);
+
+  // 3. Fallback to 32-bit registry keys
   if not Result then
     Result := RegQueryStringValue(HKLM32, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
   if not Result then
     Result := RegQueryStringValue(HKCU32, 'SOFTWARE\Docker Inc.\Docker Desktop', 'Version', Version);
+  if not Result then
+    Result := RegQueryStringValue(HKLM32, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop', 'UninstallString', Version);
+  if not Result then
+    Result := RegQueryStringValue(HKCU32, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop', 'UninstallString', Version);
 end;
 
 function InitializeSetup(): Boolean;
